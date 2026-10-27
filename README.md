@@ -118,8 +118,7 @@ On Linux, any Clang with compiler-rt works: `cmake --preset fuzz -DCMAKE_C_COMPI
 │   ├── main.c                  # Entry point & bringup loop
 │   └── platform/               # Hardware abstraction (BOOTSEL sampling, etc.)
 ├── host/                       # SDK-free unit tests and fuzz harnesses
-├── docs/ROADMAP.md             # Architecture, threat model & roadmap
-└── ResearchDocs/               # Hardware & protocol reference notes
+└── docs/ROADMAP.md             # Architecture, threat model & roadmap
 ```
 
 ## License

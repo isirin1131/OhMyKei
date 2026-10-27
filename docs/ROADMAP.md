@@ -1,12 +1,12 @@
-# OhMyKei 方向与路线图（v2）
+# OhMyKei 方向与路线图（v3）
 
-> 依据：`ResearchDocs/01~03` 及产品定位修正。状态：**方向已定**。
+> 依据：产品定位精简（方案 B：FIDO2 + OpenPGP ECC + OATH）。状态：**方向已定**。
 
 ---
 
 ## 0. 一句话定位
 
-**一个面向程序员、MIT 许可、C17 从零编写、跑在 RP2350-Zero-CM 上的开源硬件密钥：协议兼容做满，绝不能从 USB 被攻破；硬件层不假装自己是专用安全芯片（SE），只防住“20 分钟的 easy hack”以争取反应时间，靠一键熔断脚本（Kill-Switch）与可选心跳机制完成密钥遗失后的安全闭环。**
+**一个面向程序员、MIT 许可、C17 从零编写、跑在 RP2350-Zero-CM 上的开源硬件密钥：聚焦「FIDO2 + OpenPGP (纯 ECC) + OATH」黄金三角（覆盖 WebAuthn/Passkey 登录、SSH 认证与 Git 签名、GPG 加解密签名及动态口令），绝不能从 USB 被攻破；硬件层不假装自己是专用安全芯片（SE），只防住“20 分钟的 easy hack”以争取反应时间，靠一键熔断脚本（Kill-Switch）与可选心跳机制完成密钥遗失后的安全闭环。**
 
 ---
 
@@ -14,9 +14,9 @@
 
 | 底线 | 具体做法 |
 | :--- | :--- |
-| **MIT 洁净室** | 只参照**规范**（CTAP 2.1/2.2、U2F、OpenPGP Card 3.4、NIST SP 800-73-4、YKOATH、Yubico OTP、CCID 1.1、ISO 7816-4）编写。canokey（Apache-2.0）和 RS-Key（**AGPL**）只用来理解架构、行为与踩坑点，**不复制、不逐行翻译**（Rust→C 逐行翻译仍可能构成衍生作品）。在 `docs/CLEAN_ROOM.md` 记录每个模块参照的规范章节。 |
+| **MIT 洁净室** | 只参照**规范**（CTAP 2.1、U2F、OpenPGP Card 3.4、YKOATH、CCID 1.1、ISO 7816-4）编写。canokey（Apache-2.0）和 RS-Key（**AGPL**）只用来理解架构、行为与踩坑点，**不复制、不逐行翻译**（Rust→C 逐行翻译仍可能构成衍生作品）。在 `docs/CLEAN_ROOM.md` 记录每个模块参照的规范章节。 |
 | **依赖许可白名单** | 只接受 MIT / BSD / ISC / CC0 许可，**不引入 Apache-2.0**。当前清单：pico-sdk（BSD-3）、TinyUSB（MIT）、LittleFS（BSD-3）、BearSSL（MIT）、Monocypher（BSD-2 OR CC0）。随二进制附带 `THIRD_PARTY_NOTICES`。 |
-| **程序员自主可控（无厂商 + 可随时熔断）** | 不内置任何厂商签名密钥、不依赖网页控制台或云端。硬件只是私钥的防远控/防误触容器，不是身家性命的单点故障：支持 BIP-39 种子主备同步，并提供**遗失后一键熔断脚本（自动吊销远端公钥/凭据）**与心跳扩展示例。 |
+| **程序员自主可控（无厂商 + 可随时熔断）** | 不内置任何**厂商控制或保密的**固件信任根/attestation 密钥（U2F 兼容性 attestation 使用公开的非秘密签名密钥，见 §2 约定）；不依赖网页控制台或云端。硬件只是私钥的防远控/防误触容器，不是身家性命的单点故障：支持 BIP-39 种子主备同步，并提供**遗失后一键熔断脚本（自动吊销远端公钥/凭据）**与心跳扩展示例。 |
 
 ---
 
@@ -43,7 +43,7 @@
 2. **挡住“20 分钟 Easy Hack”的轻量硬件防线**：
    - **静态 AEAD 加密落盘**：Flash 里的每条敏感记录用 AEAD（AES-GCM 或 ChaCha20-Poly1305）加密存储。主加密密钥由 **PIN（经 KDF）与设备随机密钥（MKEK）** 派生。即使攻击者拿到了整片 Flash 镜像，看到的也全是密文，20 分钟内绝无可能离线爆破出私钥。
    - **分区表围栏**：数据分区设置 `bootloader: ""`，挡住按住 BOOTSEL 插入电脑后一行 `picotool save --all` 直接拖走数据区。
-   - **一键式基础锁板（`omk lock`）**：提供极简的 `omk lock` 脚本（生成随机密钥写入 OTP 并锁定该 page + 签发固件开启基础 Secure Boot 使分区表生效 + 关闭 SWD 调试口），堵死按住 BOOTSEL 刷自制固件、插杜邦线用 OpenOCD/picotool 顺手读内存这两条路。**开发板不锁；实际使用的 Key 必须锁。**
+   - **一键式基础锁板（`omk lock`）**：提供极简的 `omk lock` 脚本（生成随机 OTP 存储根密钥并锁定该 page；调用主机侧 `picotool`，以 RP2350 BootROM 硬性要求的 ECDSA `secp256k1` 签发固件与分区表，并烧录 `picotool seal` 生成的 OTP JSON（含 BOOTKEY hash）以开启基础 Secure Boot；关闭 SWD 调试口），堵死按住 BOOTSEL 刷自制固件、插杜邦线用 OpenOCD/picotool 顺手读内存这两条路。**开发板不锁；实际使用的 Key 必须锁。**
 3. **遗失后的主动防御工具链（熔断脚本 + 心跳示例）**：
    - **密钥用途账本与一键熔断（`omk revoke`）**：记录该硬件密钥注册过的 GitHub / GitLab 账号、SSH 目标主机、GPG 公钥指纹及 WebAuthn 站点清单。遗失时一行命令批量调用 API 删公钥、清理服务器 `authorized_keys`、发布 GPG 吊销证书。
    - **心跳 / 死人开关示例（Heartbeat）**：提供可由用户自由定制的脚本模板（如定时检测硬件在位签名或远端心跳续期，超时未签到则自动触发告警或熔断脚本）。
@@ -51,20 +51,36 @@
 
 ---
 
-### ❌ 不做（过度工程、收益极低或属于专业实验室攻防范畴）
+### ❌ 不做（历史协议包袱、过度工程或实验室攻防范畴）
 
 | 项 | 理由 |
 | :--- | :--- |
-| **OTP 单调 PIN 失败计数器（及配套的 OTP HAL + Mock 框架）** | **已砍掉。** 原方案是为了防“攻击者用热风枪拆焊 2×3mm QSPI Flash 芯片、用编程器备份并反复回写快照以绕过 8 次 PIN 限制”。这需要专业拆焊台与耗时操作，完全不属于“20 分钟 easy hack”；为此设计按 bit 烧 OTP 与三套 Mock 属于典型的方向跑偏。PIN 计数直接存 Flash 即可。 |
-| **OTP 正反码成对存放（Chaff）** | **已砍掉。** 这是为了对抗开盖后用聚焦离子束（FIB）/ 被动电压对比（PVC）电子显微镜读取反熔丝，纯属实验室级假想敌。 |
-| **多阶段重型 OTP 固化仪式（`PROVISION → SEAL → HARDEN` 状态机）** | **已砍掉。** 不再把精力花在复杂的 OTP 生命周期管理、三重闸门和牺牲板测试上；简化为直接调用 `picotool` 的一键锁板脚本 `omk lock`。 |
+| **PIV（NIST SP 800-73-4 / FIPS 201）与 X.509 证书槽体系** | **已砍掉。** 主要用于政企智能卡认证、macOS 智能卡登录及 OpenSC/PKCS#11 证书体系，不在个人开发者日常主路径（SSH / WebAuthn / GPG 已覆盖），且需维护复杂的 BER-TLV 证书槽对象状态机，因此砍掉。 |
+| **RSA（2048 / 3072 / 4096）及双核后台生成** | **已砍掉。** 目标用户的日常路径（WebAuthn、OpenSSH `ed25519-sk`、新生成的现代 GPG 密钥）可全部使用 ECC（`Ed25519 / X25519 / P-256`）；存量 RSA GPG 密钥不能直接导入本 Key，需重新生成或切换为 ECC 子钥。砍掉 RSA 省去庞大的大数生成与私钥运算代码，也消除了片上耗时数十秒的密钥生成任务。 |
+| **键盘 HID（Yubico OTP / HOTP / 静态密码）及 YubiKey HMAC-SHA1 challenge-response** | **已砍掉。** Yubico OTP 虽可用官方 YubiCloud 或自建服务验证，但伪装 USB 键盘向光标处打字极易因误触 BOOTSEL 往聊天框/终端乱输字符，且需额外维护键盘 HID 接口与 OTP/challenge-response（HID feature report）协议栈（注：因此不兼容 KeePassXC 依赖的 YubiKey HMAC-SHA1 硬件解锁；KeePassXC 尚未支持 CTAP2 `hmac-secret`，参见 KeePassXC issue #3560）。动态口令统一由 CCID 上的 OATH（6–8 位 TOTP/HOTP，配合 `omk oath`）解决；需要硬件派生对称密钥的场景（如磁盘解锁）走标准 CTAP2 `hmac-secret`，USB 仅保留 `CTAPHID + CCID` 两个标准接口。 |
+| **超出目标场景的曲线（P-384 / P-521 / 固件侧 secp256k1）** | **已砍掉。** P-384/P-521 虽为 NIST 标准曲线，但 `Ed25519 + X25519 + P-256` 已满足目标客户端（主流浏览器 WebAuthn、OpenSSH、GnuPG）的日常需求；**固件密码学栈**不含 `secp256k1`（无需向固件引入第三个密码库，BearSSL + Monocypher 覆盖固件侧全部算法；主机侧 `omk lock` 仍通过 `picotool` 使用 `secp256k1` 完成 RP2350 BootROM 强制要求的 Secure Boot 签名）。 |
+| **自建 CA 刷入 FIDO Attestation 证书与设备端 X.509 解析** | **已砍掉。** 设备端不实现 X.509 解析、编码或动态 CA 证书槽管理；FIDO2 统一走 `Self Attestation` 或 `None`（减少跨站关联、零证书管理成本）；U2F Registration Response 按规范要求携带一张预置的公开自签名 DER attestation 证书，以及一对私钥也公开、非秘密的匹配签名密钥对（见下方约定）；证书仅原样拼包，不解析。 |
+| **片内 OTP 熔丝（eFuse）单调 PIN 失败计数器（及配套的 OTP HAL + Mock 框架）** | **已砍掉。** 原方案是为了防“攻击者用热风枪拆焊 2×3mm QSPI Flash 芯片、用编程器备份并反复回写快照以绕过 8 次 PIN 限制”。这需要专业拆焊台与耗时操作，完全不属于“20 分钟 easy hack”；PIN 计数直接存 Flash 即可。 |
+| **片内 OTP 熔丝（eFuse）正反码成对存放（Chaff）** | **已砍掉。** 这是为了对抗开盖后用聚焦离子束（FIB）/ 被动电压对比（PVC）电子显微镜读取反熔丝，纯属实验室级假想敌。 |
+| **多阶段重型片内 OTP 熔丝固化仪式（`PROVISION → SEAL → HARDEN` 状态机）** | **已砍掉。** 不再把精力花在复杂的片内 OTP 生命周期管理、三重闸门和牺牲板测试上；简化为直接调用 `picotool` 的一键锁板脚本 `omk lock`。 |
 | **微架构指令周期实测与降级（DWT 测 `UMULL`、降级 `i15`）、DPA 掩码、抗故障注入冗余计算** | **已砍掉。** 物理侧信道与电压/激光故障注入不在威胁模型内，软件层面直接使用 BearSSL 标准常数时间实现即可，不做微架构级折腾。 |
 | **TrustZone Non-Secure 隔离 / Encrypted boot** | 同一颗裸片上隔离收益很小，且固件本身开源、秘密在加密数据区不在代码里。 |
-| **NFC** | 板上没有 NFC 硬件。 |
-| **WebUSB 网页控制台** | 和“干净、自托管”的定位冲突，管理统一走 CLI。 |
-| **FIDO 的 PQC（ML-DSA） / 国密 SM2/SM3/SM4** | **已确认砍掉。** 目标客户端（浏览器、gpg、ssh）不通用，徒增代码体积与栈消耗。 |
-| **冒用 Yubico VID/PID** | **已确认不做。** 只做协议层兼容（YKOATH / PIV / OpenPGP / OTP）。OATH 和 OTP 的管理由 `omk` CLI 承担；gpg、OpenSC、ssh、浏览器不受影响。 |
+| **NFC / WebUSB 网页控制台** | 板上无 NFC 硬件；管理统一走 CLI，不搞网页控制台。 |
+| **FIDO 的 PQC（ML-DSA） / 国密 SM2/SM3/SM4** | **已砍掉。** 目标客户端（浏览器、gpg、ssh）不通用，徒增代码体积与栈消耗。 |
+| **冒用 Yubico VID/PID** | **已确认不做。** 只做协议层兼容（YKOATH / OpenPGP）。OATH 的管理由 `omk oath` CLI 承担；gpg、ssh、浏览器不受影响。 |
 | **A/B 双固件槽** | bootrom 的 BOOTSEL 永远可以重刷，不会变砖；省下的空间留给数据区。 |
+
+### 约定：U2F 兼容性 attestation（P0/M3 入口条件）
+
+U2F 注册响应需要一张 X.509 DER attestation 证书，并用与该证书匹配的私钥对注册数据签名。本项目使用一张**公开的、自签名的兼容性 attestation 证书**和一对**私钥也公开、非秘密**的匹配签名密钥：
+
+- 仅用于满足 U2F Registration Response 的格式与互操作，**不声明可信厂商来源**，不作为 FIDO2/OpenPGP/存储/Secure Boot 的信任根。
+- 所有设备共享同一证书/密钥对（batch attestation，批次共享证书）；相比每设备唯一证书，匿名集更大，但它仍会暴露“使用该公开兼容性证书”的批次/项目标识，不承诺绝对防关联。
+- 私钥公开意味着任何人都能伪造该兼容性 attestation；这是接受的设计取舍。登录安全仍由每个站点各自的 credential private key 保证。
+- 该密钥与 OTP 存储根密钥、Secure Boot `secp256k1` 签名密钥职责分离，不写入 OTP，不增加 provisioning。
+- 需要可信厂商 attestation 的服务不在兼容范围；严格依赖 attestation 信任的注册可能失败。
+
+该约定是 M3 的实现入口条件，不阻塞 P0/P1 方向与范围定稿。
 
 ---
 
@@ -72,10 +88,9 @@
 
 | 档 | 功能 |
 | :--- | :--- |
-| **P0：MVP（核心可用 + 熔断闭环）** | CTAPHID；CTAP 2.1（getInfo / makeCredential / getAssertion / getNextAssertion / clientPIN 协议 v1+v2 + token permissions / reset / selection / credentialManagement）；U2F；ES256 + EdDSA；驻留凭据（目标 ≥256，只受存储限制）；`credProtect`；`hmac-secret`；BOOTSEL 作为 UP；LED 状态指示；**`omk` 一键熔断脚本框架（SSH / GitHub / GitLab）与 BIP-39 种子备份/恢复** |
-| **P1：程序员日常主力** | CCID；OATH（YKOATH）；OpenPGP 3.4 的 ECC 部分（Ed25519 / X25519 / P-256 / P-384，UIF，KDF-DO）；`largeBlobs`、`minPinLength`、`alwaysUv`；**GPG 吊销证书自动生成与一键熔断接入；心跳（Heartbeat）守护程序示例** |
-| **P2：补全** | OpenPGP RSA-2048/3072/4096（密钥生成放在 Core 1）；PIV（9A/9C/9D/9E + retired 槽，ECC 与 RSA-2048，AES 管理密钥）；ES384 / ES512 / ES256K；键盘 HID：Yubico OTP（配合自建 ykval）/ HOTP / 静态密码；用户自建 CA 签发的 attestation 证书（设备只存储、不生成） |
-| **砍掉** | 见 §2 的“不做”清单 |
+| **P0：MVP（FIDO2 核心版 + 熔断闭环）** | CTAPHID；CTAP 2.1 核心命令（getInfo / makeCredential / getAssertion / getNextAssertion / clientPIN 协议 v1+v2 + token permissions / reset / selection / credentialManagement）；U2F（公开兼容性自签名 DER attestation 证书 + 公开的非秘密匹配签名密钥对，见 §2 约定）；**ES256 (P-256) + EdDSA (Ed25519)**；驻留凭据（目标 ≥256，只受存储限制）；`credProtect`；`hmac-secret`（支持 `systemd-cryptenroll`、`age-plugin-fido2-hmac`、`libfido2` / `python-fido2` 等标准客户端）；BOOTSEL 作为 UP；LED 状态指示；**`omk` 一键熔断脚本框架（SSH / GitHub / GitLab）、心跳（Heartbeat）守护程序示例与 BIP-39 种子备份/恢复** |
+| **P1：完整形态（CCID + OATH + OpenPGP 纯 ECC + CTAP 2.1 进阶特性）** | CCID 1.1；**OATH（YKOATH 6–8 位动态口令 TOTP/HOTP + `omk oath` CLI）**；**OpenPGP Card 3.4 纯 ECC 子集**（Ed25519 签名/认证、X25519 解密、P-256 兼容，UIF 物理确认，KDF-DO）；CTAP 2.1 进阶特性（`largeBlobs` + `largeBlobKey`、`minPinLength`、`alwaysUv`）；**GPG 吊销证书自动生成与一键熔断接入** |
+| **砍掉** | PIV、RSA、键盘 HID（Yubico OTP / challenge-response）、超出目标场景的曲线（P-384/P-521/固件侧 secp256k1）、动态 X.509 证书管理及 §2 的全部“不做”清单 |
 
 **非驻留凭据的设计**：credential ID = `ver ‖ nonce ‖ MAC(K_mac, rpIdHash ‖ nonce ‖ alg ‖ flags)`，私钥 = HKDF(seed, nonce ‖ rpIdHash)。这样备份 seed 就等于备份了全部非驻留凭据，主/备两把 key 可以共享同一个 seed，遗失主 key 熔断后可立即启用备 key。
 
@@ -89,27 +104,27 @@ CMakePresets.json         fw-release / fw-debug / host / fuzz 四套 preset
 cmake/pico_sdk.cmake      pico-sdk 定位与官方 import 桥接（不手写 SDK 源列表）
 src/
   platform/   硬件平台层（BOOTSEL RAM 采样、TRNG、flash、USB 描述符）
-  transport/  ctaphid.c  ccid.c  kbd_hid.c         ← TinyUSB 回调只做搬运
+  transport/  ctaphid.c  ccid.c                  ← TinyUSB 回调只做搬运（仅 HID + CCID 两个接口）
   core/       cbor.c  tlv.c  apdu.c  storage.c(AEAD+LFS)  crypto_hal.h + crypto_*.c
-  apps/       fido2/  u2f/  oath/  openpgp/  piv/  otp/  mgmt/
+  apps/       fido2/  u2f/  oath/  openpgp/  mgmt/
 host/         同一份 core+apps 在 macOS/Linux 本机编译 → 单元测试 + libFuzzer + ASan/UBSan
-tools/omk/    Python CLI（MIT）：日常管理、BIP-39 备份恢复、凭据登记账本、一键熔断（revoke）、心跳示例、一键锁板
+tools/omk/    Python CLI（MIT）：日常管理、OATH 验证码、BIP-39 备份恢复、凭据账本、一键熔断（revoke）、心跳示例、一键锁板
 ```
 
 - **构建系统（CMake + Ninja）**：固件使用官方 `pico-sdk` 原生 CMake（`fw-release` / `fw-debug` preset）；Host 测试与 Fuzz 走同一工程的 `OMK_HOST_BUILD` 分支（`host` / `fuzz` preset），分别用 CTest + ASan/UBSan 与 libFuzzer。`src/` 只放项目自身 C17 源码，不含任何 SDK 构建胶水；`pico-sdk` 的板级宏解析、`version.h`、`config_autogen.h`、链接脚本与 SDK 源文件选择全部由 `pico_sdk_init()` / `pico_add_extra_outputs()` 负责。
 - **直接复用官方 `pico-sdk` 内置的微雪板级定义与彩灯组件**：`pico-sdk` 2.3.1 已原生内置 `boards/waveshare_rp2350_zero.h`（定义了 GPIO 16 WS2812 等引脚）和 `pico_status_led`（`pico/status_led.h`，自动完成 PIO WS2812 GRB 驱动与 50µs 锁存延时）。CM 版与标准 Zero 的片上差异只有 Flash 大小（2MB vs 4MB），因此直接使用官方板级头，并在 target 上调用 `pico_override_flash_size(ohmykei 2097152)` 覆盖 Flash 区域即可，无需自造板级头或手写 PIO 驱动。
 - **`pico-sdk` 硬件层与协议层解耦**：固件底层（`src/platform/`）完全基于官方 `pico-sdk`；而纯协议与状态机目录（`core/` 和 `apps/`）通过 `platform/` 抽象接口调用硬件，不直接 `#include "pico/..."`，从而让同一份协议代码也能在 Host 上原生编译并接入 `libFuzzer`。这是确保**“绝不能从 USB 被攻破”**的核心工程手段。
-- **USB**：TinyUSB 提供复合设备。TinyUSB 主线**没有 CCID device class**，通过 `usbd_app_driver_get_cb` 自己实现一个精简版。
-- **密码学**：BearSSL（MIT）+ Monocypher（BSD-2 OR CC0），不使用堆内存，所有调用都经过 `crypto_hal.h`，详见约束 C。
+- **USB**：TinyUSB 提供复合设备（仅 `CTAPHID` + `CCID` 两个接口，不挂键盘 HID）。TinyUSB 主线**没有 CCID device class**，通过 `usbd_app_driver_get_cb` 自己实现一个精简版。
+- **密码学**：固件侧采用 BearSSL（MIT）+ Monocypher（BSD-2 OR CC0），纯 ECC 路线，不使用堆内存，所有调用都经过 `crypto_hal.h`，详见约束 C。
 - **CBOR**：自写严格的 canonical 子集解析器，限制深度和长度，作为第一个 fuzz 目标。
 - **存储**：LittleFS 存放 AEAD 加密记录；另外划一块小环形区专门写 FIDO 签名计数器，避免 LFS 元数据被频繁擦写。
-- **并发**：Core 0 负责主循环（`tud_task` + 协议处理），Core 1 只承担长任务（RSA 密钥生成/运算）。Core 1 启动时必须调用 `flash_safe_execute_core_init()`。
+- **单核优先（待 M1 实测、M3 回归验证）**：砍掉耗时数十秒的片上 RSA 密钥生成后，固件仅保留 ECC（Ed25519 / X25519 / P-256）与对称运算。工程目标是单次不可抢占 step 的最坏连续执行时间（含密码学原语 + 分块 Flash 擦除的组合）不阻塞 USB 保活周期（目标 < 50 ms）；M1 增加片上实测，M3 回归，达标则保持纯单核（Core 0），无需启用 Core 1。
 - **BOOTSEL 采样**：放进 `flash_safe_execute()` 回调，使用 `SIO_GPIO_HI_IN_QSPI_CSN_BITS`（bit 27）。只在等待 UP 时以 10–20 ms 周期采样。
 - **语言**：C17（`-std=c17 -Wall -Wextra -Werror`），host 和固件使用同一套警告集。
 
 ### 架构硬约束 A：非阻塞（从第一行代码起）
 
-**任何协议处理函数都不允许阻塞等待**，包括等按键、等 Core 1、在循环里 sleep。canokey 的 `wait_for_user_presence()` 会在内部自转 30 秒，这种写法禁止。
+**任何协议处理函数都不允许阻塞等待**，包括等按键、在循环里 sleep。canokey 的 `wait_for_user_presence()` 会在内部自转 30 秒，这种写法禁止。
 
 ```c
 typedef enum { JOB_DONE, JOB_PENDING, JOB_ERROR } job_status_t;
@@ -117,7 +132,7 @@ typedef enum { JOB_DONE, JOB_PENDING, JOB_ERROR } job_status_t;
 typedef struct job {
     job_status_t (*step)(struct job *j, uint32_t now_ms); // 每次只做有界的一小步
     void (*cancel)(struct job *j);                         // CTAPHID CANCEL、CCID abort、USB 复位时调用
-    uint8_t kind;                                          // UP_WAIT / CORE1_CRYPTO / ...
+    uint8_t kind;                                          // UP_WAIT / FLASH_SYNC / ...
     /* 应用私有状态 */
 } job_t;
 ```
@@ -125,7 +140,6 @@ typedef struct job {
 - 主循环：`tud_task()` → `transport_tick(now)` → `job_step(now)`。
 - 只要有 job 处于 `JOB_PENDING`，传输层就自动按周期发送保活：CTAPHID 约每 100 ms 发 KEEPALIVE（`UPNEEDED` 或 `PROCESSING`），CCID 发 Time Extension。应用层不感知这件事。
 - UP 等待是一个 job，每一步采样一次 BOOTSEL，超时后返回 `CTAP2_ERR_USER_ACTION_TIMEOUT`。
-- Core 1 的运算也是一个 job：`step()` 只检查 FIFO 里有没有结果；`cancel()` 置位中止标志，由 Core 1 在迭代间隙检查。
 - 同一时刻只允许一个 job，第二个请求直接返回 BUSY（CTAPHID 本身就是这个语义）。
 - host 端用假时钟驱动 job，可以确定性地测试超时、取消和并发 BUSY。
 - 已知阻塞源：Flash 擦除会暂停 XIP。规则是记录写入不放在 UP 等待中途；擦除按 4 KB 粒度切分。
@@ -138,38 +152,25 @@ typedef struct job {
 - **每个解析器与协议状态机必须配套 Fuzz 目标**：在 `host/fuzz/` 下为 CTAPHID 分包重组、CBOR 解码、FIDO2 请求分发、CCID 帧解析、APDU 命令路由分别建立 `libFuzzer` target，开启 `ASan + UBSan`，纳入 CI 门禁。
 - **状态机防绕过测试**：针对“未验证 PIN 直接请求签名”、“未完成 UP 采样直接读取结果”、“跨通道/跨应用状态污染”编写专门的负向单元测试。
 
-### 架构硬约束 C：密码学栈（纯 MIT/BSD/CC0、零 malloc）
+### 架构硬约束 C：固件密码学栈（纯 MIT/BSD/CC0、纯 ECC、零 malloc）
 
 **分工**
 
 | 库 | 只引入的部分 | 负责 |
 | :--- | :--- | :--- |
-| **BearSSL**（MIT，固定到某个 commit 并 vendor 进仓库） | `src/int` `src/ec` `src/rsa` `src/symcipher` `src/hash` `src/mac` `src/kdf` `src/rand`，不要 TLS / X.509 层 | RSA-2048/3072/4096（`br_rsa_i31_keygen`、原始私钥运算、PKCS#1 v1.5、PSS、OAEP）；P-256 / P-384 / P-521 ECDSA（RFC 6979）与 ECDH；AES-GCM/CBC/CTR；SHA-1/256/384/512、HMAC、HKDF、HMAC_DRBG |
+| **BearSSL**（MIT，固定到某个 commit 并 vendor 进仓库） | `src/int` `src/ec` `src/symcipher` `src/hash` `src/mac` `src/kdf` `src/rand`（**不引入** `src/rsa`、TLS、X.509） | P-256 ECDSA（RFC 6979 确定性 nonce）与 ECDH；AES-GCM/CBC/CTR；SHA-1（仅 OATH 兼容）/ SHA-256 / SHA-512、HMAC、HKDF、HMAC_DRBG |
 | **Monocypher**（BSD-2 OR CC0） | `monocypher.c` + `optional/monocypher-ed25519.c` | RFC 8032 Ed25519（基于 SHA-512）、X25519、ChaCha20-Poly1305 |
-| （P2 再定）micro-ecc（BSD-2）或 libsecp256k1（MIT） | — | secp256k1（BearSSL 的 `ec_prime_i31` 只支持 NIST 曲线） |
 
 **`crypto_hal.h` 规则**
 
 - `apps/` 和 `transport/` **禁止** `#include` BearSSL 或 Monocypher 的头文件，CI 用 grep 检查。
-- 直接选用 BearSSL 提供的常数时间实现（`br_aes_ct_*`、`br_ghash_ctmul32`、`i31`），不使用查表版 `aes_small`/`aes_big`。
+- 直接选用 BearSSL 提供的常数时间实现（`br_aes_ct_*`、`br_ghash_ctmul32`、`br_ec_p256_m31`），不使用查表版 `aes_small`/`aes_big`。
 - 接口只使用定长缓冲区和调用方提供的上下文，没有 malloc。敏感中间值在返回前清零。
 - 熵源：固件端用 TRNG（`pico_rand`）为 HMAC_DRBG 播种，host 端用 `getentropy()`。
 - **硬件 SHA-256**：只做可选的顶层一次性摘要加速（`crypto_sha256_oneshot()`），不侵入 BearSSL 内部 vtable；若实测收益不明显则直接省去。
+- **无 X.509 解析器与单核优先目标**：设备端不实现 X.509 解析/生成或证书槽管理（FIDO2 统一使用 `Self Attestation` / `None`，U2F 仅原样输出预置的公开自签名 DER 证书常量，并用公开的非秘密匹配签名密钥完成注册签名，见 §2 约定）。固件密码栈仅保留 `Ed25519 + X25519 + P-256`，不实现 RSA 或 `secp256k1`（主机侧 `omk lock` 的 `secp256k1` 固件签名由 `picotool` 完成）。
 
-**RSA 密钥生成：放在 Core 1，不在 RNG 回调里驱动 USB**
-
-- Core 1 运行 `br_rsa_i31_keygen`，Core 0 的主循环照常运行，USB 保活自然不会中断。
-- 启动前由 Core 0 从 TRNG 取 seed，交给 Core 1 上独立的 HMAC_DRBG 实例。Core 1 **不访问任何共享外设和锁**，也不碰 Flash。
-- 取消：Core 0 调用 `multicore_reset_core1()` 后清零 Core 1 的缓冲区。
-- 对于不愿等待片上生成 RSA-4096 的用户，`omk` 同时支持在主机上生成密钥再安全导入。
-
-**X.509：设备上不生成证书**
-
-- **FIDO attestation**：设备只存储外部导入的证书 blob 并原样放进 `x5c`；未导入时退回 self attestation。
-- **PIV**：证书由主机构造，卡只负责签 TBS 和作为数据对象存储。
-- 设备端不需要 X.509 编码器。
-
-**验证**：用 **Wycheproof** 测试向量（ECDSA、ECDH、RSA、AES-GCM、HKDF、Ed25519、X25519）在 host 上做回归测试，并纳入 CI。
+**验证**：用 **Wycheproof** 测试向量（P-256 ECDSA/ECDH、AES-GCM、ChaCha20-Poly1305、HKDF、Ed25519、X25519）在 host 上做回归测试，并纳入 CI。
 
 ### Flash 布局（2 MB）
 
@@ -191,10 +192,10 @@ typedef struct job {
 ```
 1. 刷机与初始化（5 分钟）
    刷入 UF2 → 设置 PIN → 生成主种子（BIP-39 助记词离线备份，可选同步到备用 Key）
-   →（开发板跳过；实际使用的 Key 必须执行）运行 `omk lock` 一键写入 OTP 随机根密钥、启用分区围栏、关闭 SWD
+   →（开发板跳过；实际使用的 Key 必须执行）运行 `omk lock` 一键写入片内 OTP 熔丝随机根密钥、启用分区围栏、关闭 SWD
 
 2. 日常绑定与记账
-   生成 SSH (`ed25519-sk`) / GPG / WebAuthn 凭据
+   生成 SSH (`ed25519-sk`) / Git 签名 / WebAuthn Passkey / `hmac-secret` 派生密钥 / GPG (ECC) / OATH 凭据
    → `omk` 本地账本自动记录该 Key 绑定的服务（GitHub、GitLab、目标服务器、GPG 指纹、站点列表）
 
 3. 遗失应急：20 分钟安全窗口内完成熔断
@@ -223,6 +224,7 @@ typedef struct job {
 - [ ] BOOTSEL UP 采样（`flash_safe_execute`）+ 短按/长按判定，封装成 UP-wait job
 - [ ] 基于 `pico/status_led.h` 的状态指示灯状态机（空闲 / 等待触摸 / 处理中 / 错误）
 - [ ] Flash 驱动 + LittleFS 移植 + **AEAD 记录加密层（基于 PIN KDF + 片上随机密钥）** + 断电测试
+- [ ] 片上密码学原语（P-256/Ed25519 的 keygen/sign/verify；P-256/X25519 的 ECDH）与 4 KB Flash 擦除的最坏连续执行时间实测，验证单核（Core 0）非阻塞预算（目标 < 50 ms）
 - [ ] 分区表 JSON（数据分区 `bootloader: ""` 禁止 BOOTSEL 导出）+ 嵌入 ELF 的构建步骤
 
 ### M2 USB 传输（防 USB 攻破核心层）
@@ -230,14 +232,14 @@ typedef struct job {
 - [ ] CTAPHID：INIT / MSG / CBOR / PING / CANCEL / KEEPALIVE / WINK / LOCK、通道分配、超时、分包重组 + **fuzz**
 - [ ] job 挂起期间自动发送 KEEPALIVE；CANCEL → `job.cancel()`
 
-### M3 FIDO2 / U2F（P0）
+### M3 FIDO2 核心版 / U2F（P0）
 - [ ] CBOR 编解码 + **fuzz**
 - [ ] getInfo / makeCredential / getAssertion / getNextAssertion + **协议状态机 fuzz**
 - [ ] clientPIN v1/v2、pinUvAuthToken permissions、Flash PIN 重试计数与锁定
-- [ ] ES256 + EdDSA；非驻留凭据 ID 方案；驻留凭据存储
+- [ ] ES256 (P-256) + EdDSA (Ed25519)；非驻留凭据 ID 方案；驻留凭据存储
 - [ ] credProtect、hmac-secret、credentialManagement、reset、selection
-- [ ] U2F register / authenticate
-- [ ] 互操作验证：python-fido2、libfido2 `fido2-token`、webauthn.io、`ssh-keygen -t ed25519-sk -O resident`、KeePassXC
+- [ ] U2F register / authenticate（公开兼容性自签名 DER attestation 证书 + 公开的非秘密匹配签名密钥对，见 §2 约定）
+- [ ] 互操作验证：python-fido2、libfido2 `fido2-token`、webauthn.io、`ssh-keygen -t ed25519-sk -O resident`、Git SSH 签名、`systemd-cryptenroll` / `age-plugin-fido2-hmac`（`hmac-secret`）
 
 ### M4 `omk` 程序员工具链：备份、一键熔断与心跳（P0）
 - [ ] `omk` CLI 基础框架与设备状态查询
@@ -247,22 +249,18 @@ typedef struct job {
   - WebAuthn 绑定站点清单管理与快速吊销引导
 - [ ] **心跳 / 死人开关示例（`examples/heartbeat/`）**：本地定时在位检测与远端超时自动触发熔断的参考实现
 - [ ] BIP-39 种子备份与恢复（支持主备两把 Key 快速同步）
-- [ ] 极简锁板命令（`omk lock`：封装 `picotool` 写入 OTP 随机根密钥并锁定该 page、签名分区表、关闭 SWD）
+- [ ] 极简锁板命令（`omk lock`：写入片内 OTP 熔丝随机根密钥并锁定该 page；烧录 `picotool seal` 生成的 OTP JSON（含 BOOTKEY hash）；使用 `secp256k1` 签名固件与分区表并开启 Secure Boot；关闭 SWD）
 
 ### M5 CCID + OATH（P1）
 - [ ] 自写 TinyUSB CCID class driver；扩展 APDU；job 挂起期间自动发送 Time Extension + **CCID/APDU/TLV fuzz**
-- [ ] APDU 分发 + 应用选择；OATH（YKOATH）+ `omk oath` 客户端
+- [ ] APDU 分发 + 应用选择；OATH（YKOATH 6–8 位 TOTP/HOTP）+ `omk oath` 客户端
 
-### M6 OpenPGP（P1→P2）
-- [ ] OpenPGP 3.4 ECC 部分、UIF、KDF-DO；`gpg --card-status` / 签名 / 解密 / ssh 验证
+### M6 OpenPGP 纯 ECC（P1）
+- [ ] OpenPGP Card 3.4 ECC 部分（Ed25519 签名/认证、X25519 解密、P-256）、UIF、KDF-DO；`gpg --card-status` / 签名 / 解密 / ssh 验证
 - [ ] OpenPGP 吊销证书自动预生成并接入 `omk revoke` 一键熔断
-- [ ] RSA 2048/3072/4096（Core 1 job 中生成，支持取消；同时提供主机生成后导入的快捷命令）
 
-### M7 PIV + 其他（P2）
-- [ ] PIV；OpenSC `pkcs11-tool` / macOS 智能卡登录验证
-- [ ] largeBlobs、minPinLength、alwaysUv、ES384/ES512/ES256K
-- [ ] 键盘 HID：Yubico OTP（+ 自建 ykval 部署文档）/ HOTP / 静态密码；`omk otp` 配置
-- [ ] 用户自建 CA 的 attestation
+### M7 CTAP 2.1 进阶特性（P1）
+- [ ] `largeBlobs` + `largeBlobKey`、`minPinLength`、`alwaysUv` 的互操作验证
 
 ### M8 发布工程
 - [ ] 可复现构建（Docker 或 Nix 锁定环境）、release 签名、SBOM
@@ -274,11 +272,12 @@ typedef struct job {
 
 | # | 议题 | 结论 |
 | :--- | :--- | :--- |
-| 1 | 密码学依赖 | 采用 BearSSL（MIT）+ Monocypher（BSD-2/CC0），零 malloc、选用自带常数时间实现，接口收拢于 `crypto_hal.h`（约束 C）。 |
+| 1 | 密码学依赖 | 固件侧采用 BearSSL（MIT）+ Monocypher（BSD-2/CC0），零 malloc、选用自带常数时间实现，接口收拢于 `crypto_hal.h`（约束 C）。 |
 | 2 | 冒用 Yubico VID/PID | 不做，只做协议兼容。 |
-| 3 | 硬件安全边界与防丢策略 | **修正方向**：承认通用 MCU 物理局限，砍掉 OTP 单调 PIN 计数器、OTP Mock 框架、PVC chaff、微架构侧信道实测等低边际收益项。硬件层只防“20 分钟 easy hack”（AEAD 静态加密 + 分区围栏禁 BOOTSEL 导出 + 关 SWD；开发板不锁，实际使用的 Key 必须 `omk lock`），核心防丢闭环依靠**“一键熔断脚本（`omk revoke`）+ 可选心跳程序 + BIP-39 主备切换”**。 |
+| 3 | 硬件安全边界与防丢策略 | **修正方向**：承认通用 MCU 物理局限，砍掉片内 OTP 熔丝单调 PIN 计数器、OTP Mock 框架、PVC chaff、微架构侧信道实测等低边际收益项。硬件层只防“20 分钟 easy hack”（AEAD 静态加密 + 分区围栏禁 BOOTSEL 导出 + 关 SWD；开发板不锁，实际使用的 Key 必须 `omk lock`），核心防丢闭环依靠**“一键熔断脚本（`omk revoke`）+ 可选心跳程序 + BIP-39 主备切换”**。 |
 | 4 | 国密 / PQC | 砍掉。 |
 | 5 | 语言版本 | C17。 |
 | 6 | USB 攻击面防御 | 最高安全优先级是“绝不能从 USB 被攻破”：`core/` 与 `apps/` 100% 在 host 编译，所有解析器与协议状态机强制配备 libFuzzer + ASan/UBSan（约束 B）。 |
 | 7 | 耗时操作 | 采用非阻塞 job 模型，保活由传输层统一负责（约束 A）。 |
 | 8 | 构建系统 | **采用 CMake + Ninja**：固件直接使用官方 `pico-sdk` 原生 CMake（`pico_sdk_init()` + `pico_add_extra_outputs()`），Host 测试与 Fuzz 走同一工程的 `host`/`fuzz` preset（CTest + clang ASan/UBSan + libFuzzer）。放弃 Meson 桥接，避免手工复刻 SDK 的 defines/includes/sources。 |
+| 9 | 协议与密码学范围瘦身（方案 B） | **收敛为「FIDO2 + OpenPGP (纯 ECC) + OATH」黄金三角**。彻底砍掉 PIV、RSA（2048/3072/4096）、键盘 HID（Yubico OTP / challenge-response）、超出目标场景的曲线（P-384/P-521/固件侧 `secp256k1`；注：主机侧 `omk lock` 仍通过 `picotool` 使用 `secp256k1` 完成 RP2350 Secure Boot 签名）及动态 X.509 证书管理（U2F 仅保留公开兼容性自签名 DER 证书与公开的非秘密签名密钥，见 §2 约定）。收益：固件非对称算法收敛为 `Ed25519 + X25519 + P-256`，单核优先（M1 实测最坏耗时达标则无需启用 Core 1），USB 仅保留 `CTAPHID + CCID` 两个干净接口，集中精力打磨核心协议、AEAD 存储与 `omk revoke` 熔断体验。 |

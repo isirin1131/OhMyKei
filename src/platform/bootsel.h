@@ -6,8 +6,8 @@
 /**
  * @brief Safely sample the physical BOOTSEL button state from SRAM.
  *
- * Uses pico-sdk's flash_safe_execute() to ensure Core 1 is locked out
- * and interrupts are disabled during QSPI pin manipulation.
+ * Uses pico-sdk's flash_safe_execute() to disable interrupts (and lock out
+ * any other core if enabled) during QSPI CSN pin manipulation.
  *
  * @return true if BOOTSEL is currently held down, false otherwise.
  */
