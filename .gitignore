@@ -1,0 +1,18 @@
+# CMake build trees
+build/
+build-*/
+cmake-build-*/
+CMakeUserPresets.json
+compile_commands.json
+
+# Firmware artifacts outside build trees
+*.uf2
+*.elf
+*.bin
+*.hex
+*.map
+*.dis
+
+# Tooling caches
+.cache/
+.DS_Store

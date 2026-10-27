@@ -1,0 +1,152 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "fw-release",
+      "displayName": "Firmware / Release",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/fw-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "fw-debug",
+      "displayName": "Firmware / Debug",
+      "inherits": "fw-release",
+      "binaryDir": "${sourceDir}/build/fw-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "host",
+      "displayName": "Host tests / ASan + UBSan",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build/host",
+      "cacheVariables": {
+        "OMK_HOST_BUILD": "ON",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "clang"
+      }
+    },
+    {
+      "name": "fuzz",
+      "displayName": "Host fuzzers / libFuzzer",
+      "inherits": "host",
+      "binaryDir": "${sourceDir}/build/fuzz",
+      "cacheVariables": {
+        "OMK_FUZZ": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "fw-release",
+      "configurePreset": "fw-release"
+    },
+    {
+      "name": "fw-debug",
+      "configurePreset": "fw-debug"
+    },
+    {
+      "name": "host",
+      "configurePreset": "host"
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "host",
+      "configurePreset": "host",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "fw-release",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "fw-release"
+        },
+        {
+          "type": "build",
+          "name": "fw-release"
+        }
+      ]
+    },
+    {
+      "name": "fw-debug",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "fw-debug"
+        },
+        {
+          "type": "build",
+          "name": "fw-debug"
+        }
+      ]
+    },
+    {
+      "name": "host",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "host"
+        },
+        {
+          "type": "build",
+          "name": "host"
+        },
+        {
+          "type": "test",
+          "name": "host"
+        }
+      ]
+    },
+    {
+      "name": "fuzz",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "fuzz"
+        },
+        {
+          "type": "build",
+          "name": "fuzz"
+        },
+        {
+          "type": "test",
+          "name": "fuzz"
+        }
+      ]
+    }
+  ]
+}

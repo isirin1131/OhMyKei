@@ -127,57 +127,60 @@ bool __no_inline_not_in_flash_func(read_user_presence_bootsel)(void) {
 
 ### 1. Pico SDK 2.x 的 CMake 配置与 2MB Flash 边界防护
 
+> **项目抉择更新（2026-10-26）**：OhMyKei 曾短暂采用 Meson + Ninja，并用约 500 行 Meson 桥接手工复刻 `pico-sdk` 的 defines/includes/sources；该方案会随 SDK 升级静默漂移，且无 SDK 时的 Wrap fallback 不可用。现正式回到 **CMake + Ninja**：固件直接使用官方 `pico_sdk_init()`，Host 测试与 Fuzz 走同一工程的 `host` / `fuzz` preset。构建入口见根目录 `CMakeLists.txt` 与 `CMakePresets.json`。
+
 #### 避坑指南：板级定义与 Flash 大小
 Pico SDK 2.x 提供了 `waveshare_rp2350_zero` 的板级定义，但在该定义中微雪默认配置为 4MB（`PICO_FLASH_SIZE_BYTES = 4 * 1024 * 1024`）。
 **RP2350-Zero-CM 实际 Flash 为 2MB**！若不显式覆盖，会导致：
 * LittleFS 文件系统或非易失数据区被放置在 `2MB ~ 4MB` 虚假地址，写入时在 2MB 内发生**地址回环覆写（Wrap-around）**，破坏自身固件代码；
 * 启动时校验失败，出现 Bootloop 死循环。
 
-#### 推荐构建配置文件：`CMakeLists.txt`
+#### OhMyKei 实际采用的构建方案：CMake presets
+* 板级头与彩灯驱动：直接复用 `pico-sdk` 2.3.1 内置的 `boards/waveshare_rp2350_zero.h` 与 `pico_status_led`（`pico/status_led.h`）。CM 版与标准 Zero 的片上差异只有 Flash 大小（2MB vs 4MB），因此不需要项目板级头：在 target 上调用 `pico_override_flash_size(ohmykei 2097152)` 即可生成 2MB 链接区域并注入整数编译宏；`main.c` 里的 `_Static_assert(PICO_FLASH_SIZE_BYTES == 2097152, ...)` 兜底防止覆盖丢失。
+* SDK 的 `version.h`、`config_autogen.h`、`pico_flash_region.ld` 与 `uf2`/`bin`/`hex`/`dis`/`map` 全部由 `pico_sdk_init()` / `pico_add_extra_outputs()` 生成，项目不再手写任何 SDK 源文件列表或链接脚本。
+* 构建与烧录命令：
+  ```bash
+  cmake --preset fw-release
+  cmake --build --preset fw-release
+  cmake --build --preset fw-release --target flash
+  # 或 picotool load -f -x build/fw-release/ohmykei.uf2
+  ```
+* Host 测试与 Fuzz：
+  ```bash
+  cmake --preset host && cmake --build --preset host && ctest --preset host
+  cmake --preset fuzz && cmake --build --preset fuzz && ctest --preset fuzz
+  ```
+
+#### 构建配置要点（与根目录 `CMakeLists.txt` 一致）
 ```cmake
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.25)
 
-# 设置目标平台为 RP2350 Arm Secure 模式
-set(PICO_PLATFORM rp2350-arm-s CACHE STRING "Target RP2350 Secure ARM platform")
-set(PICO_BOARD waveshare_rp2350_zero CACHE STRING "Zero pinout; CM variant overrides flash")
+set(PICO_BOARD waveshare_rp2350_zero CACHE STRING "")
+include(cmake/pico_sdk.cmake)
 
-# 修正 Flash 大小为 2MB。必须在 include(pico_sdk_import.cmake) 之前设置，
-# 否则板级头的 4MB #define 会在编译期胜出，而链接脚本用 2MB，出现静默不一致。
-# 不要用 FORCE，否则命令行 -DPICO_FLASH_SIZE_BYTES=... 无法覆盖。
-set(PICO_FLASH_SIZE_BYTES 2097152 CACHE STRING "2MB NOR Flash for Zero-CM")
-
-include(pico_sdk_import.cmake)
-
-project(OhMyKei C CXX ASM)
-set(CMAKE_C_STANDARD 11)
-set(CMAKE_CXX_STANDARD 17)
-
+project(ohmykei C CXX ASM)
 pico_sdk_init()
 
-add_executable(ohmykei
-    src/main.c
-    src/fido2_core.c
-    src/button_up.c
-    src/ws2812_driver.c
-)
+set(OMK_FIRMWARE_SOURCES src/main.c src/platform/bootsel.c)
+add_executable(ohmykei ${OMK_FIRMWARE_SOURCES})
+target_include_directories(ohmykei PRIVATE src)
 
-# 链接 SDK 核心库与 RP2350 特性库
-target_link_libraries(ohmykei
-    pico_stdlib
-    pico_multicore
-    pico_rand          # 硬件 TRNG 随机数发生器
-    hardware_sha256    # RP2350 内置硬件 SHA-256 加速
-    pico_mbedtls       # 硬件加速版 mbedtls
-)
+# CM 版与标准 Zero 的唯一片上差异：2MB 而不是 4MB Flash。
+pico_override_flash_size(ohmykei 2097152)
 
-# 开启标准 USB 输出与生成 UF2
+# 严格 flag 只作用于项目源码；SDK 源码会一起编进同一个 target。
+set_source_files_properties(${OMK_FIRMWARE_SOURCES}
+    PROPERTIES COMPILE_OPTIONS "-std=c17;-Wall;-Wextra;-Werror")
+
+target_link_libraries(ohmykei PRIVATE pico_stdlib pico_status_led)
 pico_enable_stdio_usb(ohmykei 1)
 pico_enable_stdio_uart(ohmykei 0)
 pico_add_extra_outputs(ohmykei)
 ```
 
-> **板级定义补充**：pico-sdk 2.3.1 **没有** `waveshare_rp2350_zero_cm` 板级头；`waveshare_rp2350_zero` 是 4 MB 的标准 Zero。上面的写法（Zero 头 + 2 MB 覆盖）能用，但语义上混用了两个产品。更干净的做法是复制一份 `boards/waveshare_rp2350_zero_cm.h`，把 `PICO_FLASH_SIZE_BYTES` 改成 2 MB，其余 GPIO/UART/WS2812 定义保持，然后通过 `PICO_BOARD_HEADER_DIRS` 引入。  
-> 另外，`pico_enable_stdio_usb(ohmykei 1)` 会给安全密钥额外加一个 CDC 串口接口；如果不是调试必需，建议设为 0，避免复合设备描述符变复杂。
+> **板级定义补充**：pico-sdk 2.3.1 没有 `waveshare_rp2350_zero_cm` 板级头，因为 CM 与标准 Zero 的片上差异只有 Flash 大小。直接使用官方 `waveshare_rp2350_zero.h`，并用 `pico_override_flash_size(ohmykei 2097152)` 覆盖即可；不要复制或改写 SDK 板级头，否则会引入无意义的维护分叉。
+> `pico_override_flash_size()` 会给 target 注入整数宏 `PICO_FLASH_SIZE_BYTES=2097152`，`main.c` 的 `_Static_assert` 保证它没有被漏掉。
+> 另外，`pico_enable_stdio_usb(ohmykei 1)` 会给安全密钥额外加一个 CDC 串口与 `picotool` 复位接口；研发阶段开启可实现免按键 `picotool load -f -x` 重刷，正式复合 HID/CCID 阶段再关闭。
 
 #### 工具链要求（GCC 版本说明）
 * **推荐**使用 pico-sdk 2.3.x 官方验证过的 **ARM GNU Toolchain 14.2 / 15.3**（或 13.2）。**GCC 13 不是硬性下限**：pico-sdk 2.3.1 自身没有版本检查，其 CI 仍可用 arm-none-eabi-gcc 9.2.1 构建 RP2350。
@@ -368,19 +371,16 @@ brew install --cask gcc-arm-embedded
 # 3. 验证编译器版本
 arm-none-eabi-gcc --version
 
-# 4. 获取 Pico SDK 2.x 并导出环境变量
-git clone --recurse-submodules https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk
-echo 'export PICO_SDK_PATH=~/pico-sdk' >> ~/.zshrc
-source ~/.zshrc
+# 4. 获取 Pico SDK 2.3.1（构建默认搜索 ~/.pico-sdk/sdk/2.3.1）
+git clone --branch 2.3.1 --depth 1 --recurse-submodules \
+    https://github.com/raspberrypi/pico-sdk.git ~/.pico-sdk/sdk/2.3.1
+# 如果 SDK 放在别处：export PICO_SDK_PATH=/path/to/pico-sdk
 
 # 5. 构建 OhMyKei 项目
 cd /Users/zhecai/OhMyKei
-mkdir build && cd build
-cmake -G Ninja \
-    -DPICO_BOARD=waveshare_rp2350_zero \
-    -DPICO_PLATFORM=rp2350-arm-s \
-    -DPICO_FLASH_SIZE_BYTES=2097152 ..
-ninja
+cmake --preset fw-release
+cmake --build --preset fw-release
+cmake --build --preset fw-release --target flash
 ```
 
 ---
@@ -389,7 +389,7 @@ ninja
 
 | 关注项 | 建议决策与配置 |
 | :--- | :--- |
-| **Flash 边界** | 显式定义 `PICO_FLASH_SIZE_BYTES=2097152`（2MB），防止与 4MB 版混淆造成越界崩盘。 |
+| **Flash 边界** | 使用官方 `waveshare_rp2350_zero.h`，在 target 上调用 `pico_override_flash_size(ohmykei 2097152)`；`main.c` 静态断言 `PICO_FLASH_SIZE_BYTES == 2097152` 兜底。 |
 | **物理按键交互** | 采用在 RAM 中执行的 `read_user_presence_bootsel()` 采样逻辑，利用外壳上的 BOOT 按键作为物理触摸确认。 |
 | **状态灯效** | 使用 GPIO 16 驱动 WS2812B，透过 3D 打印外壳透光层指示 FIDO2 等待触摸、认证成功等状态。 |
 | **加密选型** | 平台选 `rp2350-arm-s`（Secure 态）。pico-sdk 2.3.1 没有现成的 Non-Secure 平台，**不要把“TrustZone 隔离私钥”当作 v1 既有能力**；先靠 secure boot + OTP + 分区表。开启 `MBEDTLS_SHA256_ALT` 使用硬件 SHA-256；随机数由 `pico_rand` 硬件 TRNG 支撑。 |
