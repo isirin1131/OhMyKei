@@ -2,13 +2,11 @@
 
 A programmer-oriented hardware passkey & security key firmware targeting the **Waveshare RP2350-Zero-CM** (RP2350A, 2MB NOR Flash, USB Type-C Male), written from scratch in C17 under the MIT license.
 
-## Security Philosophy
+## Status
 
-1. **Zero Compromise over USB**: All protocol parsers (CTAPHID, CBOR, CCID, APDU, TLV) and state machines are decoupled from hardware headers so they compile natively on the host with `libFuzzer + ASan/UBSan`. Every sensitive operation requires physical User Presence (BOOTSEL press).
-2. **Stop the "20-Minute Easy Hack"**: General-purpose MCUs are not CC EAL6+ Secure Elements. Instead of over-engineering against lab-grade decapping/FIB attacks, hardware defenses focus on buying the user a **>20-minute reaction window** against opportunistic physical access (AEAD at-rest encryption derived from PIN KDF + on-chip secret, partition table `bootloader: ""` blocking `picotool save --all` dumps, and a one-command `omk lock`). Dev boards stay unlocked; **any key in real use must run `omk lock`**.
-3. **Kill-Switch (`omk revoke`) & Heartbeat**: If a key is lost, the user runs `omk revoke` (or a dead-man's switch / heartbeat triggers it) within the reaction window to automatically revoke SSH/GPG keys on GitHub, GitLab, and remote servers, and walk through WebAuthn credential rotation.
+The current firmware is a board bring-up demo: BOOTSEL sampling, WS2812 LED control, and USB CDC debug output. Host and fuzz targets are smoke tests. FIDO2, OpenPGP, credential storage, and management tools are not implemented yet.
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the full architecture and milestone plan.
+Development starts with FIDO2 / CTAP 2.1; CCID and OpenPGP Card 3.4 follow. See [docs/ROADMAP.md](docs/ROADMAP.md) for scope and development priorities.
 
 ---
 
@@ -118,7 +116,7 @@ On Linux, any Clang with compiler-rt works: `cmake --preset fuzz -DCMAKE_C_COMPI
 │   ├── main.c                  # Entry point & bringup loop
 │   └── platform/               # Hardware abstraction (BOOTSEL sampling, etc.)
 ├── host/                       # SDK-free unit tests and fuzz harnesses
-└── docs/ROADMAP.md             # Architecture, threat model & roadmap
+└── docs/ROADMAP.md             # Goals, current status & development order
 ```
 
 ## License
