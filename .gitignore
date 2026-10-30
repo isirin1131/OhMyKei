@@ -16,3 +16,12 @@ compile_commands.json
 # Tooling caches
 .cache/
 .DS_Store
+
+# FIDO Conformance Test Tools & Large Binaries
+tools/fido-conformance/
+*.dmg
+*.exe
+*.msi
+*.ipa
+*.apk
+*.zip

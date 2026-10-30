@@ -4,9 +4,11 @@ A programmer-oriented hardware passkey & security key firmware targeting the **W
 
 ## Status
 
-The current firmware is a board bring-up demo: BOOTSEL sampling, WS2812 LED control, and USB CDC debug output. Host and fuzz targets are smoke tests. FIDO2, OpenPGP, credential storage, and management tools are not implemented yet.
+The current firmware is a board bring-up demo: BOOTSEL sampling, WS2812 LED control, and USB CDC debug output. Host and fuzz targets are smoke tests. FIDO2 / CTAP 2.3 protocol handling, crypto subsystem, and credential storage are under active development.
 
-Development starts with FIDO2 / CTAP 2.1; CCID and OpenPGP Card 3.4 follow. See [docs/ROADMAP.md](docs/ROADMAP.md) for scope and development priorities.
+OhMyKei focuses purely on **FIDO2 / CTAP 2.3** (with backward compatibility for 2.1/2.0) over a single driverless USB HID interface. OpenPGP / CCID is deliberately omitted in favor of modern developer workflows (WebAuthn Passkeys, SSH-SK / Git signing, and `age` file encryption via `hmac-secret`).
+
+Functional conformance is verified primarily against the official **FIDO Alliance Certification Conformance Testing Tools v1.9.3.1** (CTAP 2.3 module); community open-source FIDO2/CTAP test suites will be evaluated at a later stage. See [docs/ROADMAP.md](docs/ROADMAP.md) for full scope and development priorities.
 
 ---
 
