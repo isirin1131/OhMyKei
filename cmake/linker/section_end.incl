@@ -1,0 +1,62 @@
+/* OhMyKei override: the main stack lives at the top of regular SRAM.
+ *
+ * Symbol semantics on this target:
+ *   __StackTop     - initial MSP (top of RAM)
+ *   __StackBottom  - lower bound of the 32 KiB main stack; the SDK stack
+ *                    guard loads this into MSPLIM when PICO_USE_STACK_GUARDS=1
+ *   __StackLimit   - historical "maximum heap pointer" name used by
+ *                    pico_malloc/newlib.  It is deliberately the *stack
+ *                    bottom*, not the top of RAM, so heap growth can never
+ *                    overwrite live stack frames.
+ *   __HeapLimit    - upper bound for the (unused-by-core) C heap, capped at the
+ *                    stack bottom for the same reason.
+ *
+ * The assertions below are real layout checks (not tautologies): they tie the
+ * symbols to __end__, the literal 32 KiB stack size and the flash geometry.
+ */
+SECTIONS
+{
+    __StackTop = ORIGIN(RAM) + LENGTH(RAM);
+    __StackOneTop = ORIGIN(SCRATCH_X) + LENGTH(SCRATCH_X);
+    __StackBottom = __StackTop - SIZEOF(.stack_dummy);
+    __StackOneBottom = __StackOneTop - SIZEOF(.stack1_dummy);
+
+    __StackLimit = __StackBottom;
+    __HeapLimit = __StackBottom;
+
+    PROVIDE(__stack = __StackTop);
+
+    PROVIDE (__heap_start = __end__);
+    PROVIDE (__heap_end = __HeapLimit);
+    PROVIDE( __tls_align = MAX(ALIGNOF(.tdata), ALIGNOF(.tbss)) );
+    PROVIDE( __tls_size_align = (__tls_size + __tls_align - 1) & ~(__tls_align - 1));
+    PROVIDE( __arm32_tls_tcb_offset = MAX(8, __tls_align) );
+
+    PROVIDE (_end = __end__);
+    PROVIDE (__llvm_libc_heap_limit = __HeapLimit);
+
+    /* Stack must stay at the top of regular SRAM and be exactly 32 KiB. */
+    ASSERT(SIZEOF(.stack_dummy) == 0x8000,
+           "main stack must be exactly 32 KiB (PICO_STACK_SIZE)")
+    ASSERT(__StackTop == ORIGIN(RAM) + LENGTH(RAM),
+           "main stack must start at the top of RAM")
+    ASSERT(__StackBottom >= ORIGIN(RAM),
+           "32 KiB main stack does not fit in RAM")
+
+    /* MSPLIM and the legacy heap floor are the same address: stack bottom. */
+    ASSERT(__StackLimit == __StackTop - 0x8000,
+           "__StackLimit must equal the bottom of the 32 KiB main stack")
+
+    /* Static data/heap must not reach the live stack. */
+    ASSERT(__end__ <= __HeapLimit,
+           "static data/heap start overlaps the main stack")
+    ASSERT(__HeapLimit <= __StackBottom,
+           "heap limit grows into the live main stack")
+
+    /* Firmware image must stay below the upper 1 MiB FIDO store.  The store
+     * starts at XIP offset 0x00100000; the image must never spill into it. */
+    ASSERT(LENGTH(FLASH) - 0x100000 == 0x100000,
+           "upper 1 MiB FIDO store is not the top half of flash")
+    ASSERT(__flash_binary_end <= (ORIGIN(FLASH) + 0x100000),
+           "firmware image overlaps the upper 1 MiB FIDO store at XIP offset 0x00100000")
+}

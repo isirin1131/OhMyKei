@@ -1,0 +1,110 @@
+name: firmware
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  OMK_DEPS: ${{ runner.temp }}/omk-deps
+  PICO_SDK_PATH: ${{ runner.temp }}/pico-sdk
+  GIT_TERMINAL_PROMPT: "0"
+
+jobs:
+  firmware:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Check out pinned pico-sdk and TinyUSB
+        run: |
+          set -euo pipefail
+          mkdir -p "$PICO_SDK_PATH"
+          git -C "$PICO_SDK_PATH" init
+          git -C "$PICO_SDK_PATH" remote add origin https://github.com/raspberrypi/pico-sdk.git
+          git -C "$PICO_SDK_PATH" fetch --depth 1 origin 079c6f39023649b154152db30f1d781e884879bc
+          git -C "$PICO_SDK_PATH" checkout --detach FETCH_HEAD
+          test "$(git -C "$PICO_SDK_PATH" rev-parse HEAD)" = \
+            079c6f39023649b154152db30f1d781e884879bc
+          git -C "$PICO_SDK_PATH" submodule update --init --depth 1 lib/tinyusb
+          test "$(git -C "$PICO_SDK_PATH/lib/tinyusb" rev-parse HEAD)" = \
+            86ad6e56c1700e85f1c5678607a762cfe3aa2f47
+
+      - name: Install pinned build tools
+        run: |
+          set -euo pipefail
+          mkdir -p "$OMK_DEPS/downloads" "$OMK_DEPS/bin"
+          curl -fL --retry 3 \
+            https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz \
+            -o "$OMK_DEPS/downloads/cmake.tar.gz"
+          printf '%s  %s\n' \
+            5a1133ff103c71eb5120e2cc3de922733e7d8a26a98ae716397e8676adb367bf \
+            "$OMK_DEPS/downloads/cmake.tar.gz" | sha256sum -c -
+          tar -xzf "$OMK_DEPS/downloads/cmake.tar.gz" -C "$OMK_DEPS"
+
+          curl -fL --retry 3 \
+            https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-linux.zip \
+            -o "$OMK_DEPS/downloads/ninja.zip"
+          printf '%s  %s\n' \
+            6f98805688d19672bd699fbbfa2c2cf0fc054ac3df1f0e6a47664d963d530255 \
+            "$OMK_DEPS/downloads/ninja.zip" | sha256sum -c -
+          unzip -q "$OMK_DEPS/downloads/ninja.zip" -d "$OMK_DEPS/bin"
+          chmod +x "$OMK_DEPS/bin/ninja"
+
+          curl -fL --retry 3 \
+            https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-eabi.tar.xz \
+            -o "$OMK_DEPS/downloads/arm-toolchain.tar.xz"
+          printf '%s  %s\n' \
+            62a63b981fe391a9cbad7ef51b17e49aeaa3e7b0d029b36ca1e9c3b2a9b78823 \
+            "$OMK_DEPS/downloads/arm-toolchain.tar.xz" | sha256sum -c -
+          tar -xJf "$OMK_DEPS/downloads/arm-toolchain.tar.xz" -C "$OMK_DEPS"
+
+          echo "$OMK_DEPS/cmake-3.31.6-linux-x86_64/bin" >> "$GITHUB_PATH"
+          echo "$OMK_DEPS/bin" >> "$GITHUB_PATH"
+          echo "$OMK_DEPS/arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-eabi/bin" >> "$GITHUB_PATH"
+
+      - name: Verify tool versions
+        run: |
+          set -euo pipefail
+          test "$(cmake --version | sed -n '1s/^cmake version //p')" = 3.31.6
+          test "$(ninja --version)" = 1.12.1
+          test "$(arm-none-eabi-gcc -dumpfullversion -dumpversion)" = 14.2.1
+          cmake --version
+          ninja --version
+          arm-none-eabi-gcc --version
+
+      - name: Build and install pinned picotool
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 \
+            https://github.com/raspberrypi/picotool/releases/download/2.3.1/picotool-2.3.1.tar.gz \
+            -o "$OMK_DEPS/downloads/picotool.tar.gz"
+          printf '%s  %s\n' \
+            1e343345b6dbabea20cf52f755fac96b32d7fa2074e50e2094a623110f1eb9b9 \
+            "$OMK_DEPS/downloads/picotool.tar.gz" | sha256sum -c -
+          tar -xzf "$OMK_DEPS/downloads/picotool.tar.gz" -C "$OMK_DEPS"
+          cmake -S "$OMK_DEPS/picotool-2.3.1" -B "$OMK_DEPS/picotool-build" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPICO_SDK_PATH="$PICO_SDK_PATH" \
+            -DPICOTOOL_NO_LIBUSB=ON \
+            -DPICOTOOL_FLAT_INSTALL=ON \
+            -DCMAKE_INSTALL_PREFIX="$OMK_DEPS/picotool-install"
+          cmake --build "$OMK_DEPS/picotool-build" --target picotool
+          cmake --install "$OMK_DEPS/picotool-build"
+          echo "$OMK_DEPS/picotool-install/picotool" >> "$GITHUB_PATH"
+          echo "picotool_DIR=$OMK_DEPS/picotool-install/picotool" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$OMK_DEPS/picotool-install" >> "$GITHUB_ENV"
+
+      - name: Verify picotool version
+        run: |
+          set -euo pipefail
+          picotool version 2.3.1
+
+      - name: Build firmware and check layout
+        run: |
+          set -euo pipefail
+          cmake --workflow --preset fw-release
+          cmake --build --preset fw-release --target layout-check

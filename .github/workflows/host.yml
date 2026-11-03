@@ -1,0 +1,28 @@
+name: host
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build clang
+
+      - name: Install libFuzzer runtime
+        run: |
+          CLANG_MAJOR="$(clang -dumpversion | cut -d. -f1)"
+          sudo apt-get install -y "libclang-rt-${CLANG_MAJOR}-dev"
+
+      - name: Run host workflow
+        run: cmake --workflow --preset host
+
+      - name: Run fuzz workflow
+        run: cmake --workflow --preset fuzz

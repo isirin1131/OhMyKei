@@ -1,0 +1,14 @@
+/* OhMyKei override: the CTAP core needs far more than the 4 KiB SCRATCH_Y
+ * region, so place the main stack in regular SRAM (the firmware does not use
+ * the heap). */
+SECTIONS
+{
+    .stack1_dummy (NOLOAD):
+    {
+        *(.stack1*)
+    } > SCRATCH_X
+    .stack_dummy (NOLOAD):
+    {
+        KEEP(*(.stack*))
+    } > RAM
+}

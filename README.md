@@ -4,11 +4,51 @@ A programmer-oriented hardware passkey & security key firmware targeting the **W
 
 ## Status
 
-The current firmware is a board bring-up demo: BOOTSEL sampling, WS2812 LED control, and USB CDC debug output. Host and fuzz targets are smoke tests. FIDO2 / CTAP 2.3 protocol handling, crypto subsystem, and credential storage are under active development.
+OhMyKei now contains a working CTAP 2.x protocol core: strict CBOR, CTAPHID
+transport, P-256/Ed25519 crypto, flash-backed resident credentials, and the
+`authenticatorGetInfo`, `MakeCredential`, `GetAssertion`, `GetNextAssertion`,
+`ClientPIN` (protocols 1 and 2), `Reset`, `Selection` and
+`CredentialManagement` commands. `hmac-secret`, `hmac-secret-mc` and
+`credProtect` are implemented. The RP2350 firmware exposes a single
+driverless USB HID (FIDO usage page) interface; the CDC debug interface has
+been removed.
 
-OhMyKei focuses purely on **FIDO2 / CTAP 2.3** (with backward compatibility for 2.1/2.0) over a single driverless USB HID interface. OpenPGP / CCID is deliberately omitted in favor of modern developer workflows (WebAuthn Passkeys, SSH-SK / Git signing, and `age` file encryption via `hmac-secret`).
+Implemented:
 
-Functional conformance is verified primarily against the official **FIDO Alliance Certification Conformance Testing Tools v1.9.3.1** (CTAP 2.3 module); community open-source FIDO2/CTAP test suites will be evaluated at a later stage. See [docs/ROADMAP.md](docs/ROADMAP.md) for full scope and development priorities.
+- CTAPHID: INIT/PING/CBOR/CANCEL/ERROR/KEEPALIVE/WINK, `NMSG` capability,
+  non-blocking UP waits, cross-channel busy handling, and LRU channel
+  reclamation that never evicts a busy channel or an active reassembly.
+- Strict CTAP2 CBOR decoder/encoder (duplicate keys, indefinite lengths and
+  non-minimal encodings rejected).
+- ES256 (P-256, RFC 6979) and EdDSA (Ed25519) credentials, self-attestation
+  (`packed`) and `none`.
+- Resident and non-resident credentials, RP/user overwrite semantics,
+  lease-based signature counter, dual-bank credential log and compaction.
+- Version 2 append-only meta log (8 sectors of 256-byte snapshots) plus two
+  496 KiB credential-log banks (124 4-KiB sectors, 496 1-KiB slots each);
+  compaction and Reset switch banks through one verified meta record carrying
+  a new log epoch.
+- PIN/UV Auth protocols 2 and 1, `getPinToken` compatibility, PUAT
+  permissions and RP binding, persistent retry counter with a journaled PIN
+  candidate resolved at boot.
+- `hmac-secret` (32/64-byte salts, `age`/PRF use), `hmac-secret-mc`,
+  `credProtect`, CredentialManagement enumeration/delete/update.
+- Host tests (12 registered CTest entries under ASan + non-recoverable UBSan)
+  and libFuzzer harnesses for CBOR and CTAPHID.
+
+Not implemented yet (kept out of `getInfo`): `authenticatorConfig`,
+`credBlob`, `largeBlobs`, U2F/CTAP1, built-in UV/biometrics, `alwaysUv`, and
+the second-batch `minPinLength` policy hooks.
+
+> **Verification state:** a clean host build with AddressSanitizer and
+> non-recoverable UndefinedBehaviorSanitizer currently passes all 12 registered
+> CTest entries (`ctest --preset host`). This result does **not** include a
+> libFuzzer run; the fuzz preset was not executed in this checkout. A Release
+> firmware build passes the committed `layout-check` target (32 KiB stack and
+> image placed below the upper 1 MiB store). The firmware has **not** been run against the FIDO
+> Alliance conformance suite on physical hardware, and there has been **no
+> physical power-cut test**. Treat this as a development build, not a
+> certified authenticator.
 
 ---
 
@@ -57,8 +97,9 @@ cmake --build --preset fw-release
 cmake --build --preset fw-release --target flash
 # or: picotool load -f -x build/fw-release/ohmykei.uf2
 
-# 4. Inspect size
+# 4. Inspect size and verify the linked stack/flash layout
 cmake --build --preset fw-release --target size
+cmake --build --preset fw-release --target layout-check
 ```
 
 The whole firmware workflow can also be run in one shot:
@@ -68,6 +109,20 @@ cmake --workflow --preset fw-release
 ```
 
 For debugging, use `cmake --preset fw-debug` / `cmake --build --preset fw-debug`; the artifacts land in `build/fw-debug/`.
+
+### Firmware version reported by `getInfo`
+
+`OMK_FIRMWARE_VERSION` is a build/configuration value for CTAP `getInfo` key
+14. It defaults to `1`; pass a non-negative decimal integer when configuring:
+
+```bash
+cmake --preset fw-release -DOMK_FIRMWARE_VERSION=2
+```
+
+Leading zeros (for example `08`) are rejected at configure time, as are values
+that do not fit in a CTAP unsigned integer. The value is metadata only: it does
+not imply certification, and it is not an anti-rollback or release-trust
+mechanism.
 
 > **First-time flash**: If the board is currently running factory firmware without USB reset support, hold down the physical **BOOT** button while plugging it into USB, run `picotool load -f -x build/fw-release/ohmykei.uf2`, and subsequent flashes will reboot automatically without pressing buttons.
 
@@ -83,27 +138,52 @@ cmake --build --preset host
 ctest --preset host
 ```
 
-Fuzz targets use libFuzzer:
+With the default `OMK_SANITIZE=ON`, the host configuration registers **12
+CTest entries**: eight unit/regression executables (`test_build_smoke`,
+`test_crypto`, `test_cbor`, `test_ctaphid`, `test_p256`,
+`test_crypto_ed25519`, `test_ctap`, `test_store`), the CTAPHID fuzz-replay
+regression, the non-recoverable-UBSan probe, the firmware-version definition
+probe, and the core SanitizerCoverage check. The unit tests cover
+known-answer crypto vectors, CBOR strictness, CTAPHID state machines, CTAP
+workflows, and a NOR-like flash model with power-cut injection at individual
+read/write/erase operations. With sanitizers disabled the UBSan probe is not
+registered (11 entries).
+
+The CBOR and CTAPHID harnesses use libFuzzer (a smoke target is kept for
+toolchain checks):
 
 ```bash
 cmake --preset fuzz
 cmake --build --preset fuzz
 ctest --preset fuzz
 
-# or drive the harness directly
-./build/fuzz/omk_fuzz_smoke -runs=1000
+# or drive a harness directly
+./build/fuzz/host/omk_fuzz_cbor -runs=1000
+./build/fuzz/host/omk_fuzz_ctaphid -runs=1000
 ```
 
-On macOS, Apple's clang does **not** ship the libFuzzer runtime. Install LLVM and point the fuzz preset at it:
+The fuzz preset additionally registers `omk_fuzz_cbor`, `omk_fuzz_ctaphid`,
+`fuzz.smoke` and `fuzz.core_has_sancov` alongside the normal host entries.
+A libFuzzer runtime is required; stock Apple clang does **not**
+ship one, so configuration fails with an actionable error. The command-layer
+CTAPHID harness now calls the real `omk_ctap_handle`, but the fuzz preset has
+**not** been run in this checkout. The repository CI installs the matching
+Ubuntu compiler-rt package; that is configuration only until the workflow has
+actually run. To use a Homebrew LLVM locally:
 
 ```bash
 brew install llvm
-rm -rf build/fuzz   # discard the cache from the Apple-clang attempt
-cmake --preset fuzz -DCMAKE_C_COMPILER="$(brew --prefix llvm)/bin/clang"
+cmake --fresh --preset fuzz \
+  -DCMAKE_C_COMPILER="$(brew --prefix llvm)/bin/clang"
 cmake --build --preset fuzz
+ctest --preset fuzz --output-on-failure
 ```
 
-On Linux, any Clang with compiler-rt works: `cmake --preset fuzz -DCMAKE_C_COMPILER=clang`.
+On Linux, a Clang installation with compiler-rt/libFuzzer works. The normal
+host suite also builds `test_fuzz_ctaphid_replay` without libFuzzer: it replays
+captured inputs in a different order and requires byte-identical output,
+catching leaked channel/time/RNG state. Only that replay regression is verified
+in the current checkout; it is not evidence that libFuzzer has run.
 
 ---
 
@@ -113,13 +193,73 @@ On Linux, any Clang with compiler-rt works: `cmake --preset fuzz -DCMAKE_C_COMPI
 .
 ├── CMakeLists.txt              # Firmware + host entry points
 ├── CMakePresets.json           # fw-release / fw-debug / host / fuzz
-├── cmake/pico_sdk.cmake        # pico-sdk discovery (official import script)
-├── src/                        # OhMyKei firmware source code (pure C17)
-│   ├── main.c                  # Entry point & bringup loop
-│   └── platform/               # Hardware abstraction (BOOTSEL sampling, etc.)
-├── host/                       # SDK-free unit tests and fuzz harnesses
-└── docs/ROADMAP.md             # Goals, current status & development order
+├── cmake/
+│   ├── core-sources.cmake      # Shared firmware/host protocol-core source list
+│   ├── pico_sdk.cmake          # pico-sdk discovery
+│   └── linker/                 # 32 KiB stack, flash-end assertions, layout check
+├── src/
+│   ├── main.c                  # Firmware entry point
+│   ├── omk_port.h              # Platform abstraction used by the core
+│   ├── crypto/                 # SHA-256/512, HMAC, HKDF, AES-256, P-256, Ed25519
+│   ├── fido/                   # CBOR, CTAPHID, CTAP commands, storage
+│   └── platform/               # TinyUSB HID, flash, button, LED
+├── host/
+│   ├── tests/                  # 8 CTest suites plus fuzz replay regression
+│   ├── check_*.cmake           # UBSan, firmware-version and sancov probes
+│   └── fuzz_*.c                # libFuzzer targets
+├── docs/
+│   ├── ROADMAP.md              # Goals, current status and development order
+│   ├── road.md                 # CTAP 2.3 scope decisions
+│   ├── IMPLEMENTATION.md       # Design, storage/PIN details, limitations
+│   └── audit-plan.md           # Audit evidence, fixes and remaining blockers
+└── tools/                      # Local FIDO conformance tooling
 ```
+
+## Usage notes
+
+- Enumerate the device as `OhMyKei FIDO2 Security Key`; browsers, `libfido2`
+  and OpenSSH see a standard CTAP2 HID authenticator.
+- The on-board BOOT button acts as the user-presence (UP) button during
+  operation. A short press confirms registration/login.
+- `authenticatorReset` is accepted only in the first 10 seconds after boot and
+  requires a button press. It installs a fresh master secret, keeps the model
+  AAGUID unchanged, clears the PIN and resident credentials, and bumps the
+  reset/log epochs. The previous credential bank is left in place and becomes
+  logically inert; it is not guaranteed to be physically erased.
+- Set a PIN from the platform (`ClientPIN`); PIN verification also sets the UV
+  flag, so `credProtect` levels 2/3 and PRF workflows that need UV work.
+- Signature counters use 64-value leases. Resident credentials are appended to
+  one of two 496 KiB log banks and compacted into the other bank when full;
+  there is room for 64 resident credentials, after which creation reports
+  `KEY_STORE_FULL`.
+- A legacy v1 meta image, an unknown version or a foreign non-blank meta image
+  makes store initialisation fail closed without writing or erasing anything.
+  There is no v1-to-v2 migration; an affected device needs an explicit recovery
+  decision rather than an automatic factory format.
+
+## Current limitations
+
+- The RP2350 RNG adapter cannot detect or propagate entropy-source failure;
+  `pico_rand` must not be treated as satisfying the core CSPRNG/failure
+  contract for a security release. The development USB PID `2E8A:10A1` is also
+  unallocated and must be replaced with an allocated identity before release.
+- No FIDO Alliance conformance run on physical hardware, and no physical
+  power-cut/brownout test. The host flash model is useful but not a substitute.
+- No BOOTSEL/flash-readback anti-rollback, OTP-backed key wrapping or secure
+  boot. The master secret and PIN hash are still stored in external NOR flash
+  and can be read back with picotool unless the hardware is otherwise
+  protected.
+- Old credential-bank records are made epoch-inert and historical meta-log
+  snapshots are superseded, but neither is necessarily securely erased by
+  design.
+- The software P-256, table-based AES and Ed25519 implementations are not
+  proven constant-time. Only source-level mitigations and limited buffer wiping
+  are present; deeper scratch cleanup is not a formal guarantee.
+- The second-batch features listed above remain unimplemented and are not
+  advertised in `getInfo`.
+
+See [IMPLEMENTATION.md](docs/IMPLEMENTATION.md) for the detailed design and
+test/simulation limits.
 
 ## License
 

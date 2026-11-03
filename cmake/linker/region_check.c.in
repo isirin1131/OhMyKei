@@ -1,0 +1,26 @@
+/*
+ * Generated compile-time check: the CTAP core's fixed flash-store geometry
+ * (src/omk_port.h) must match the flash region handed to the linker.
+ *
+ * The linker fragment cmake/linker/section_end.incl independently asserts that
+ * the *image* ends before the store and that the upper region is exactly
+ * 1 MiB.  This TU catches a drifted OMK_FLASH_REGION_* constant at compile
+ * time, before the link, without modifying platform logic.
+ */
+#include <stdint.h>
+
+#include "omk_port.h"
+
+_Static_assert(OMK_FLASH_REGION_OFF == 0x00100000u,
+               "FIDO store must start at XIP offset 0x00100000");
+_Static_assert(OMK_FLASH_REGION_SIZE == 0x00100000u,
+               "FIDO store must occupy the upper 1 MiB");
+_Static_assert(OMK_FLASH_SECTOR_SIZE == 4096u,
+               "store geometry assumes 4 KiB flash sectors");
+_Static_assert((OMK_FLASH_REGION_OFF % OMK_FLASH_SECTOR_SIZE) == 0u,
+               "FIDO store must be sector aligned");
+_Static_assert((OMK_FLASH_REGION_SIZE % OMK_FLASH_SECTOR_SIZE) == 0u,
+               "FIDO store size must be a whole number of sectors");
+_Static_assert(OMK_FLASH_REGION_OFF + OMK_FLASH_REGION_SIZE ==
+                   PICO_FLASH_SIZE_BYTES,
+               "FIDO store must end exactly at the end of flash");

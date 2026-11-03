@@ -1,0 +1,13 @@
+set(OMK_CORE_SOURCES
+    "${CMAKE_CURRENT_LIST_DIR}/../src/crypto/sha256.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/crypto/aes.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/crypto/p256.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/crypto/ed25519.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_cbor.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_ctaphid.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_store.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_ctap.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_ctap_pin.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_ctap_auth.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_ctap_mgmt.c"
+)
