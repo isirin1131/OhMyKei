@@ -279,6 +279,10 @@ static uint8_t parse_rp(const omk_cbor_doc *doc, const omk_cbor_val *rp,
         *id_len > OMK_RP_ID_MAX) {
         return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
     }
+    const omk_cbor_val *name = omk_cbor_map_get_text(doc, rp, "name", 4);
+    if (name != NULL && name->type != OMK_CBOR_TEXT) {
+        return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
+    }
     return OMK_CTAP2_OK;
 }
 
@@ -384,6 +388,7 @@ static uint8_t choose_algorithm(const omk_cbor_doc *doc,
     if (params->type != OMK_CBOR_ARRAY || params->count == 0) {
         return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
     }
+    bool selected = false;
     for (uint16_t i = 0; i < params->count; i++) {
         const omk_cbor_val *p = omk_cbor_array_get(doc, params, i);
         if (p == NULL || p->type != OMK_CBOR_MAP) {
@@ -401,25 +406,50 @@ static uint8_t choose_algorithm(const omk_cbor_doc *doc,
         if (t->type != OMK_CBOR_TEXT) {
             return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
         }
+        if (a != NULL && a->type != OMK_CBOR_NINT && a->type != OMK_CBOR_UINT) {
+            return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
+        }
         if (t->len != 10 || memcmp(t->data, "public-key", 10) != 0) {
             continue;
         }
         if (a == NULL) {
             return OMK_CTAP2_ERR_MISSING_PARAMETER;
         }
-        if (a->type != OMK_CBOR_NINT && a->type != OMK_CBOR_UINT) {
-            return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
-        }
-        if (a->num == -7) {
+        /* Keep the first supported algorithm, but validate every entry. */
+        if (!selected && a->num == -7) {
             *alg = OMK_ALG_ES256;
-            return OMK_CTAP2_OK;
-        }
-        if (a->num == -8) {
+            selected = true;
+        } else if (!selected && a->num == -8) {
             *alg = OMK_ALG_EDDSA;
-            return OMK_CTAP2_OK;
+            selected = true;
         }
     }
-    return OMK_CTAP2_ERR_UNSUPPORTED_ALGORITHM;
+    return selected ? OMK_CTAP2_OK : OMK_CTAP2_ERR_UNSUPPORTED_ALGORITHM;
+}
+
+static uint8_t validate_credential_list(const omk_cbor_doc *doc,
+                                         const omk_cbor_val *list) {
+    if (list == NULL) {
+        return OMK_CTAP2_OK;
+    }
+    if (list->type != OMK_CBOR_ARRAY) {
+        return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
+    }
+    for (uint16_t i = 0; i < list->count; i++) {
+        const omk_cbor_val *desc = omk_cbor_array_get(doc, list, i);
+        if (desc == NULL || desc->type != OMK_CBOR_MAP) {
+            return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
+        }
+        const omk_cbor_val *id = omk_cbor_map_get_text(doc, desc, "id", 2);
+        const omk_cbor_val *type = omk_cbor_map_get_text(doc, desc, "type", 4);
+        if (id == NULL || type == NULL) {
+            return OMK_CTAP2_ERR_MISSING_PARAMETER;
+        }
+        if (id->type != OMK_CBOR_BYTES || type->type != OMK_CBOR_TEXT) {
+            return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
+        }
+    }
+    return OMK_CTAP2_OK;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -437,18 +467,13 @@ typedef struct {
 static bool match_descriptor(omk_ctap *ct, const omk_cbor_doc *doc,
                              const omk_cbor_val *desc,
                              const uint8_t rp_hash[32], bool uv, match_t *out) {
-    if (desc == NULL || desc->type != OMK_CBOR_MAP) {
-        return false;
-    }
+    /* Both request lists are fully validated before matching starts. */
     const omk_cbor_val *idv = omk_cbor_map_get_text(doc, desc, "id", 2);
     const omk_cbor_val *type = omk_cbor_map_get_text(doc, desc, "type", 4);
-    if (idv == NULL || idv->type != OMK_CBOR_BYTES || idv->len == 0 ||
-        idv->len > OMK_CRED_ID_MAX) {
+    if (idv->len == 0 || idv->len > OMK_CRED_ID_MAX) {
         return false;
     }
-    if (type != NULL &&
-        (type->type != OMK_CBOR_TEXT || type->len != 10 ||
-         memcmp(type->data, "public-key", 10) != 0)) {
+    if (type->len != 10 || memcmp(type->data, "public-key", 10) != 0) {
         return false;
     }
 
@@ -494,7 +519,7 @@ static bool match_descriptor(omk_ctap *ct, const omk_cbor_doc *doc,
 static bool excluded(omk_ctap *ct, const omk_cbor_doc *doc,
                      const omk_cbor_val *list, const uint8_t rp_hash[32],
                      bool uv) {
-    if (list == NULL || list->type != OMK_CBOR_ARRAY) {
+    if (list == NULL) {
         return false;
     }
     for (uint16_t i = 0; i < list->count; i++) {
@@ -585,6 +610,10 @@ uint8_t omk_ctap_cmd_makecredential(omk_ctap *ct, const omk_cbor_doc *doc,
     if (status != OMK_CTAP2_OK) {
         return status;
     }
+    status = validate_credential_list(doc, exclude);
+    if (status != OMK_CTAP2_OK) {
+        return status;
+    }
     bool rk = false, up = true, uv_opt = false;
     status = parse_options(doc, optv, &rk, &up, &uv_opt);
     if (status != OMK_CTAP2_OK) {
@@ -599,6 +628,10 @@ uint8_t omk_ctap_cmd_makecredential(omk_ctap *ct, const omk_cbor_doc *doc,
                                 &cred_protect_requested);
     if (status != OMK_CTAP2_OK) {
         return status;
+    }
+    /* Enterprise attestation is not advertised or implemented. */
+    if (omk_cbor_map_get_int(doc, req, 0x0A) != NULL) {
+        return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
     uint8_t rp_hash[32];
     omk_sha256(rp_id, rp_id_len, rp_hash);
@@ -1163,11 +1196,12 @@ uint8_t omk_ctap_cmd_getassertion(omk_ctap *ct, const omk_cbor_doc *doc,
         cdh_len != 32) {
         return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
     }
-    if (allow != NULL && allow->type != OMK_CBOR_ARRAY) {
-        return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
+    uint8_t status = validate_credential_list(doc, allow);
+    if (status != OMK_CTAP2_OK) {
+        return status;
     }
     bool rk = false, up = true, uv_opt = false;
-    uint8_t status = parse_options(doc, optv, &rk, &up, &uv_opt);
+    status = parse_options(doc, optv, &rk, &up, &uv_opt);
     if (status != OMK_CTAP2_OK) {
         return status;
     }
@@ -1209,11 +1243,6 @@ uint8_t omk_ctap_cmd_getassertion(omk_ctap *ct, const omk_cbor_doc *doc,
         if (status != OMK_CTAP2_OK) {
             return status;
         }
-    } else if (ct->store.pin_set && allow == NULL) {
-        /* No pinUvAuthParam, no allowList, PIN set: PIN_REQUIRED regardless of
-         * the up option.  The up:false pre-flight path only skips user
-         * presence, it does not bypass PIN protection. */
-        return OMK_CTAP2_ERR_PIN_REQUIRED;
     }
 
     status = parse_hmac_extension(ct, doc, extv, up);

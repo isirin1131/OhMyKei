@@ -11,7 +11,7 @@
 - 当前是 dev 阶段，未实施 OTP 熔丝和 boot 刷写锁定属于明确范围边界，不列为本轮缺陷。
 - 必须区分：已确认缺陷、当前设计债、条件触发/未来债、另一份报告中的错误或过度表述。
 - 另一 agent 的报告和 Antigravity 后续输出都只是待核实证据，不能直接接受其结论。
-- 当前验证结果（2026-11-04）：九项 host 可执行测试、十项虚拟 HID 端到端回归通过；fw-release `layout-check` 通过。官方框架验收为 187 通过、118 官方跳过、21 失败，无漏跑，详见 5.7。三个构建探针的先前证据保留在 5.4，本轮未重跑；未运行 libFuzzer 或物理设备测试。
+- 当前验证结果（2026-11-05）：9/9 核心、13/13 虚拟 HID 回归及 fw-release `layout-check` 通过。官方定向 76/12/0、零重试；全量 208/118/0，有一项规范冲突用例三次重试后通过，详见 5.8。三个构建探针的先前证据保留在 5.4，本轮未重跑；未运行 libFuzzer 或物理设备测试。
 - 第 2–4 节保留审计时的证据与判断，不代表所有条目仍未修复；逐项处置状态以第 5 节为准。
 
 ## 2. 审计时确认的技术债（历史快照）
@@ -240,6 +240,38 @@
 7/7 框架判定回归通过；实际冒烟、元数据、全跳过、超时和两种中断路径均符合退出码
 约定。宿主 Ctrl-C 正常停止 supervisor 后可重新启动完整会话。新增与收尾代码已
 通过子代理只读 review。完整说明与命令见 [automation.md](automation.md)。
+
+### 5.8 2026-11-05：使用自动化结果迭代协议核心
+
+从上一轮 21 个官方失败出发，修复以下行为，不改变官方用例或能力声明：
+
+- `rp.name`、excludeList/allowList 的已知字段检查补齐。列表先完整校验，再匹配；
+  缺字段与类型错误返回相应错误，未知类型和未知字节串 ID 仍是合法的不匹配项。
+- pubKeyCredParams 保留首个支持算法，同时校验后续项，避免尾部非法参数被提前成功掩盖。
+- 未实现企业证明时，出现 enterpriseAttestation 返回 `INVALID_PARAMETER`。
+- Selection 收到主机 CANCEL 返回 `KEEPALIVE_CANCEL`，不转换成用户主动拒绝。
+- 去掉设 PIN 后对无 allowList 断言的统一拦截，按 credProtect 决定可见性：1 可发现，
+  2 无 UV 时需要显式 ID，3 必须 UV。无 UV 响应仍不返回用户名，UP/UV 标志据本次操作设置。
+
+依据：[CTAP 2.3](https://fidoalliance.org/specs/fido-v2.3-ps-20260226/fido-client-to-authenticator-protocol-v2.3-ps-20260226.html)
+§6.1、§6.1.3、§6.9、§11.2.9.1.5，以及本地官方 v1.9.3.1 对应断言。
+原 `test_getassertion_pin_upfalse` 把全局 PIN 拦截当成要求，本轮纠正其预期，
+另通过独立客户端验证三档策略、UP/UV、验签和无 UV 用户名称限制。
+
+新增回归在未修复核心上复现 40 个子断言失败与 2 个协议异常；修复后
+`python3 host/virtual/run.py test` 为 9/9 核心（14.39 秒）与 13/13 HID
+（22.899 秒）通过，ASan/非恢复 UBSan 启用。HID 报告：
+`build/virtual-hid/runs/run-ue7ynq11/result.json`。
+Release `layout-check` 通过，32 KiB 主栈，镜像位于存储区起点之前。
+交付代码已通过子代理只读复核。备份：`backups/20261105-ctap-iteration-wb13gzps/`。
+官方定向 76/12/0、零重试，旧 21 个失败逐项转为通过；全量 208/118/0，326 项
+无遗漏，耗时 582.138 秒。报告分别为 `session-pmwj0lzb` 与 `session-mfhksb5e`。
+全量中 ClientPin2-Policy F-2 三次重试后通过。查证发现：该用例对随机超长明文
+统一要求 0x37，但规范 §6.5.5.5 要求非 64 字节 paddedNewPin 返回 0x02。
+未为迎合断言修改 PIN 实现；扩充固定长度 64/80/96/112/128 字节回归，验证协议 1/2；
+新增后 `test_ctap` 再次通过（2.69 秒）。本轮临时 Flash、浏览器配置和 Python 缓存
+移入回收站，报告与构建产物保留。
+完整结果与工具局限见 [automation.md](automation.md)。
 
 ## 6. Antigravity 官方子代理调用方式
 

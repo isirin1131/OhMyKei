@@ -73,8 +73,15 @@ it through the kernel's hidraw path. The platform uses monotonic time,
 the process to model power cycling while preserving the Flash file.
 
 `python3 host/virtual/run.py test` uses a dedicated Colima container and runs
-the nine executable host tests plus ten independent `python-fido2` HID tests.
-Both sets passed on 2026-11-04, with the HID suite taking 18.28 seconds.
+the nine executable host tests plus thirteen independent `python-fido2` HID tests.
+Both sets passed on 2026-11-05, in 14.39 and 22.899 seconds respectively.
+The core validates complete algorithm and credential lists before selecting an
+algorithm or matching a credential; unknown types remain valid non-matches.
+Unsupported enterprise attestation requests return `INVALID_PARAMETER`.
+Selection preserves the transport cancellation status `KEEPALIVE_CANCEL`.
+The HID regressions now cover malformed request entries before and after valid
+entries, algorithm preference, unknown credential types, enterprise attestation
+rejection, Selection cancellation, and credProtect 1/2/3 with a configured PIN.
 GCC's UBSan also exposed zero-length copies from null optional profile fields
 in `omk_store_update_user`; those copies now run only for nonempty fields.
 The existing user-update regression covers the failure.
@@ -90,11 +97,17 @@ The first full CTAP 2.3 list completed with 183 passes, 118 skips and 25 failure
 (734.027 seconds); four were metadata configuration errors now corrected.
 The official entry now defaults to the full list, with smoke/group/title filters,
 coverage checks, retry records and environment hashes. npm dependencies are locked.
-Acceptance completed all 326 cases: 187 passes, 118 skips and 21 protocol-test
-failures in 731.067 seconds. The 37 metadata cases now have no failures.
+The runner acceptance completed all 326 cases: 187 passes, 118 skips and 21
+protocol-test failures. Core fixes on 2026-11-05 removed those 21 failures:
+the focused run passed 76, skipped 12 and failed none, without retries;
+the full run passed 208, skipped 118 and failed none in 582.138 seconds.
+ClientPin2-Policy F-2 passed only after three retries: the official assertion
+expects PIN_POLICY_VIOLATION even for padded plaintext longer than 64 bytes,
+where CTAP 2.3 §6.5.5.5 requires INVALID_PARAMETER. The implementation follows
+the specification, with deterministic tests for 64/80/96/112/128-byte inputs.
 Seven runner checks and real skip/timeout/interruption paths also passed.
 This does not emulate RP2350 instructions, TinyUSB, the hardware RNG or Flash
-timing; protocol failures still require separate diagnosis.
+timing; the result is not hardware certification or a retry-free full pass.
 Commands and current evidence: [automation.md](automation.md).
 
 ### Fuzz targets
@@ -535,9 +548,11 @@ a hardware TRNG model.
   request parsing relies on that result without repeating the length check.
 * `hmac-secret-mc`: the same computation during MakeCredential, returned in
   `authData.extensions`; it requires the `hmac-secret` boolean in the request.
-* `credProtect`: stored in the credential ID and resident record; levels 2/3
-  are filtered out of GetAssertion/excludeList without UV. MakeCredential
-  echoes the adopted value only when the request included `credProtect`.
+* `credProtect`: stored in the credential ID and resident record. Without UV,
+  level 1 allows discovery, level 2 requires an explicit credential ID, and
+  level 3 is not usable; excludeList ignores level 3 without UV. Setting a PIN
+  does not change these policies. Unverified assertions omit user names.
+  MakeCredential echoes the adopted value only when it was requested.
 
 ## RNG failure behavior
 

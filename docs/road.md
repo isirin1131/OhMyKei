@@ -16,7 +16,10 @@
 零长度拷贝已修复。硬件时序和官方完整套件结果单独记录，见 [automation.md](automation.md)。
 官方 v1.9.3.1 的 GetInfo/PIN 协商最小集已取得 5 通过、2 能力不适用跳过、0 失败；
 首轮完整 CTAP 2.3 清单取得 183 通过、118 官方跳过、25 失败；4 个元数据错误
-已修正，再次全量验收为 187 通过、118 官方跳过、21 失败，无漏跑。协议用例待定位。
+已修正，工具验收为 187 通过、118 官方跳过、21 失败。2026-11-05 核心修复后，
+定向 76/12/0（无重试），全量 208/118/0，无漏跑，旧 21 项全部通过；自有回归
+为 9/9 核心和 13/13 HID 通过。全量中一个超长 PIN 用例三次重试后通过，
+已记录其断言与规范冲突，并用固定长度回归验证固件行为。
 官方入口默认全量，支持冒烟与定向筛选；报告包含
 完整性判定、重试和环境标识。该结果不代表一致性认证通过。
 
@@ -132,13 +135,13 @@ remainingDiscoverableCredentials  按“最大字段尺寸”保守估算
 ### 3.8 Reset / Selection
 
 - Reset：只在上电后 10 s 内接受，超时返回 `NOT_ALLOWED`；需要触摸确认。清除内容：主密钥、全部 rk、PIN、重试计数、配置项；同时重新生成凭据库状态随机数（将来做 encIdentifier 时可以直接用）。型号 AAGUID 是认证器型号标识，**Reset 不重生**。
-- Selection：等一次触摸，返回 OK、`OPERATION_DENIED` 或 `USER_ACTION_TIMEOUT`。用户操作超时 ≥10 s，建议 30 s。
+- Selection：等一次触摸，返回 OK；超时返回 `USER_ACTION_TIMEOUT`，主机 CANCEL 返回 `KEEPALIVE_CANCEL`。`OPERATION_DENIED` 仅对应用户明确拒绝，不能用来替代主机取消。用户操作超时 ≥10 s，建议 30 s。
 
 ### 3.9 扩展
 
 - **hmac-secret**：CredRandomWithUV 和 WithoutUV **不存储，而是派生**（HKDF(主密钥, 凭据内部秘密 ‖ uv 标志)）。这样非驻留凭据也能支持（§12.7 规定两类凭据都 MUST 支持）。`pinUvAuthProtocol` 缺省时按协议 1 处理，这也是必须实现协议 1 的直接原因：旧客户端会这么发。`up:false` 时返回 `UNSUPPORTED_OPTION`；salt 长度只接受 32 或 64 字节。**用不用 PIN 会得到不同的输出**，这点要写进用户文档（age / SSH 场景）。
 - **hmac-secret-mc**：在 MakeCredential 里用相同的处理逻辑直接输出（WebAuthn PRF 在创建凭据时就能求值）；没带 hmac-secret 时返回 `MISSING_PARAMETER`。
-- **credProtect**：值随凭据持久化（非驻留凭据存在 ID 的标志位里）；默认值 1；不能主动返回没被请求的输出。它影响三个地方：GetAssertion 过滤、excludeList、credMgmt 返回值。
+- **credProtect**：值随凭据持久化（非驻留凭据存在 ID 的标志位里）；默认值 1；不能主动返回没被请求的输出。无 UV 时，1 允许发现，2 仅允许显式凭据 ID，3 不允许使用；excludeList 无 UV 时不匹配级别 3。设置 PIN 不额外禁止级别 1 的发现，无 UV 断言不返回用户名称。credMgmt 返回已保存的策略值。
 
 ### 3.10 认证声明（attestation）
 

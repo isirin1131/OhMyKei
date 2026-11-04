@@ -1901,17 +1901,21 @@ static void test_pin_oversize(fixture *f) {
 
     uint8_t pinpad[64] = {0};
     memcpy(pinpad, "1234", 4);
-    uint8_t big[96];
+    uint8_t big[128];
     memset(big, 0x41, sizeof big);
 
-    /* setPIN newPin is exactly 64 bytes; 80 plaintext bytes must not be
-     * decrypted into the 64-byte buffer. */
-    check(clientpin_set(f, &pc1, 1, big, 80) ==
-              OMK_CTAP1_ERR_INVALID_PARAMETER,
-          "oversize setPIN p1 rejected");
-    check(clientpin_set(f, &pc2, 2, big, 80) ==
-              OMK_CTAP1_ERR_INVALID_PARAMETER,
-          "oversize setPIN p2 rejected");
+    /* CTAP 2.3 6.5.5.5: paddedNewPin must be exactly 64 bytes. A 64-byte
+     * unpadded PIN violates policy; larger plaintexts have invalid shape.
+     * Cover each block boundary deterministically: the official F-2 test
+     * randomizes this length but expects PIN_POLICY_VIOLATION for all. */
+    for (size_t n = 64; n <= sizeof big; n += 16) {
+        const uint8_t expected = n == 64 ? OMK_CTAP2_ERR_PIN_POLICY_VIOLATION
+                                        : OMK_CTAP1_ERR_INVALID_PARAMETER;
+        check(clientpin_set(f, &pc1, 1, big, n) == expected,
+              "oversize setPIN p1 distinguishes policy from shape");
+        check(clientpin_set(f, &pc2, 2, big, n) == expected,
+              "oversize setPIN p2 distinguishes policy from shape");
+    }
     check(!f->ct.store.pin_set, "oversize setPIN does not set PIN");
     check(clientpin_set(f, &pc2, 2, pinpad, 64) == 0, "valid setPIN p2");
 
@@ -2104,7 +2108,7 @@ static void test_getassertion_pin_upfalse(fixture *f) {
     pin_set_1234(f, &pc, 2);
     check(f->ct.store.pin_set, "upfalse PIN is set");
 
-    /* up:false, no allowList, no pinUvAuthParam: PIN_REQUIRED, no signature. */
+    /* credProtect=1 remains discoverable without UV after a PIN is set. */
     omk_cbor_enc e;
     omk_cbor_enc_init(&e, body, sizeof body);
     omk_cbor_put_map(&e, 3);
@@ -2117,10 +2121,18 @@ static void test_getassertion_pin_upfalse(fixture *f) {
     omk_cbor_put_text(&e, "up", 2);
     omk_cbor_put_bool(&e, false);
     len = 1;
-    check(send_cmd(f, 0x02, body, e.len, resp, sizeof resp, &len) ==
-              OMK_CTAP2_ERR_PIN_REQUIRED,
-          "up:false without allowList requires PIN");
-    check(len == 0, "PIN_REQUIRED does not emit an assertion");
+    const uint64_t before = f->env.now;
+    check(send_cmd(f, 0x02, body, e.len, resp, sizeof resp, &len) == 0,
+          "credProtect=1 discovery does not require PIN");
+    check(f->env.now == before, "up:false discovery does not wait for presence");
+    omk_cbor_doc discovery;
+    check(omk_cbor_decode(&discovery, resp, len),
+          "unverified discovery response parses");
+    const omk_cbor_val *ad = omk_cbor_map_get_int(
+        &discovery, omk_cbor_root(&discovery), 2);
+    check(ad != NULL && ad->type == OMK_CBOR_BYTES && ad->len >= 37 &&
+              (ad->data[32] & 0x05u) == 0,
+          "unverified discovery has neither UP nor UV flags");
 
     /* allowList remains a legal no-PIN path. */
     omk_cbor_enc_init(&e, body, sizeof body);

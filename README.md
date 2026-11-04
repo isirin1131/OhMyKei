@@ -145,16 +145,17 @@ python3 host/virtual/run.py test
 ```
 
 This builds the real core with ASan/UBSan, runs the nine executable host tests,
-then runs ten `python-fido2` tests through Linux hidraw/UHID. It verifies ES256
+then runs thirteen `python-fido2` tests through Linux hidraw/UHID. It verifies ES256
 and Ed25519 signatures, PIN protocols, credential management, persistence,
-cancellation, user presence and the Reset window. See [virtual HID automation](docs/automation.md)
+cancellation, request validation, credProtect policies, user presence and the Reset window. See [virtual HID automation](docs/automation.md)
 for setup, persistent-device mode and the official-tool integration boundary.
 
 `python3 host/virtual/run.py official` runs the full CTAP 2.3 authenticator
 list using official v1.9.3.1 under Linux Electron 41.7.0. Use `--suite smoke`
 for the short GetInfo/PIN check, or `--group Metadata` / `--grep` for focused
-runs. The completed full run after metadata corrections recorded 187 passes,
-118 skips and 21 protocol-test failures; all 326 cases reached a final state. See [automation.md](docs/automation.md)
+runs. After the 2026-11-05 core fixes, all 326 cases completed: 208 passes,
+118 skips and no failures. One randomized PIN-policy case needed three retries;
+its expected error conflicts with the specification for oversized padded input. See [automation.md](docs/automation.md)
 for result files, exit codes and current validation; this is not a certification pass.
 
 The host build is deliberately independent of `pico-sdk`, so protocol code can be tested on macOS/Linux with sanitizers:

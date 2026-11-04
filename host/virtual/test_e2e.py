@@ -170,8 +170,112 @@ class VirtualHidTests(unittest.TestCase):
         self.expect_error(CtapError.ERR.KEEPALIVE_CANCEL,
                           lambda: self.make(event=event, on_keepalive=keepalive))
         self.assertIn(2, statuses)
+        event.clear()
+        statuses.clear()
+        self.expect_error(CtapError.ERR.KEEPALIVE_CANCEL,
+                          lambda: self.ctap.selection(event=event, on_keepalive=keepalive))
+        self.assertIn(2, statuses)
         self.rpc("/control/mode", {"auto_touch_ms": 250})
         self.assert_credential(self.make())
+
+    def test_makecredential_request_validation(self):
+        request = {1: os.urandom(32), 2: RP, 3: {"id": os.urandom(16)},
+                   4: [{"type": "public-key", "alg": -7}]}
+        wrong_type = CtapError.ERR.CBOR_UNEXPECTED_TYPE
+        missing = CtapError.ERR.MISSING_PARAMETER
+        malformed = [(False, wrong_type), ({"alg": -7}, missing),
+                     ({"type": False, "alg": -7}, wrong_type),
+                     ({"type": "public-key"}, missing),
+                     ({"type": "public-key", "alg": "-7"}, wrong_type),
+                     ({"type": "future-key", "alg": "-7"}, wrong_type)]
+        for index, (entry, code) in enumerate(malformed):
+            for tail in (False, True):
+                with self.subTest(parameter=index, tail=tail):
+                    params = request[4] + [entry] if tail else [entry] + request[4]
+                    self.expect_error(code, lambda: self.ctap.send_cbor(1, {**request, 4: params}))
+        for field, value, code in (
+            (2, {**RP, "name": False}, wrong_type),
+            (5, False, wrong_type),
+            (10, 1, CtapError.ERR.INVALID_PARAMETER),
+            (10, 2, CtapError.ERR.INVALID_PARAMETER),
+        ):
+            with self.subTest(field=field, variant=type(value).__name__):
+                self.expect_error(code, lambda: self.ctap.send_cbor(1, {**request, field: value}))
+        # Validation must not change preference order or reject future types.
+        for first, second in ((-7, -8), (-8, -7)):
+            response = self.ctap.make_credential(request[1], RP, request[3], [
+                {"type": "future-key"}, {"type": "public-key", "alg": -99},
+                {"type": "public-key", "alg": first},
+                {"type": "public-key", "alg": second},
+            ])
+            self.assertEqual(response.auth_data.credential_data.public_key[3], first)
+            PackedAttestation().verify(response.att_stmt, response.auth_data, request[1])
+
+    def test_credential_descriptor_validation(self):
+        credential = self.make()
+        descriptor = {"type": "public-key", "id": credential.credential_id}
+        wrong_type = CtapError.ERR.CBOR_UNEXPECTED_TYPE
+        missing = CtapError.ERR.MISSING_PARAMETER
+        malformed = [(False, wrong_type), ({"id": b"unknown"}, missing),
+                     ({"type": False, "id": b"unknown"}, wrong_type),
+                     ({"type": "public-key"}, missing),
+                     ({"type": "public-key", "id": "unknown"}, wrong_type),
+                     ({"type": "future-key", "id": "unknown"}, wrong_type)]
+        mc = {1: os.urandom(32), 2: RP, 3: {"id": os.urandom(16)},
+              4: [{"type": "public-key", "alg": -7}]}
+        ga = {1: RP["id"], 2: os.urandom(32)}
+        for command, request, field in ((1, mc, 5), (2, ga, 3)):
+            for index, (entry, code) in enumerate(malformed):
+                for tail in (False, True):
+                    with self.subTest(command=command, entry=index, tail=tail):
+                        entries = [descriptor, entry] if tail else [entry, descriptor]
+                        self.expect_error(code, lambda: self.ctap.send_cbor(
+                            command, {**request, field: entries}))
+        # Unknown types and unknown byte-string IDs are valid non-matches.
+        ignored = [{"type": "future-key", "id": credential.credential_id},
+                   {"type": "public-key", "id": b"unknown"}]
+        self.ctap.send_cbor(1, {**mc, 5: ignored})
+        self.ctap.send_cbor(2, {**ga, 3: ignored + [descriptor]})
+
+    def test_credprotect_with_pin(self):
+        credentials = []
+        for policy in (1, 2, 3):
+            rp = {"id": f"policy-{policy}.example"}
+            response = self.ctap.make_credential(
+                os.urandom(32), rp,
+                {"id": os.urandom(16), "name": "synthetic-user", "displayName": "Synthetic"},
+                [{"type": "public-key", "alg": -7}],
+                options={"rk": True}, extensions={"credProtect": policy},
+            )
+            credentials.append((policy, rp["id"], response.auth_data.credential_data))
+        client = ClientPin(self.ctap, PinProtocolV2())
+        pin = secrets.token_hex(4)
+        client.set_pin(pin)
+        for policy, rp_id, credential in credentials:
+            for listed in (False, True):
+                for up in (False, True):
+                    with self.subTest(policy=policy, listed=listed, up=up):
+                        allow = [{"type": "public-key", "id": credential.credential_id}] if listed else None
+                        client_hash = os.urandom(32)
+                        def assertion():
+                            return self.ctap.get_assertion(
+                                rp_id, client_hash, allow_list=allow, options={"up": up, "uv": False})
+                        if policy == 3 or (policy == 2 and not listed):
+                            self.expect_error(CtapError.ERR.NO_CREDENTIALS, assertion)
+                            continue
+                        result = assertion()
+                        credential.public_key.verify(bytes(result.auth_data) + client_hash, result.signature)
+                        self.assertEqual(result.auth_data.is_user_present(), up)
+                        self.assertFalse(result.auth_data.is_user_verified())
+                        self.assertNotIn("name", result.user)
+                        self.assertNotIn("displayName", result.user)
+            token = client.get_pin_token(pin, ClientPin.PERMISSION.GET_ASSERTION, rp_id)
+            client_hash = os.urandom(32)
+            result = self.ctap.get_assertion(
+                rp_id, client_hash, pin_uv_protocol=2,
+                pin_uv_param=client.protocol.authenticate(token, client_hash))
+            credential.public_key.verify(bytes(result.auth_data) + client_hash, result.signature)
+            self.assertTrue(result.auth_data.is_user_verified())
 
     def test_official_userpresence_endpoint(self):
         self.rpc("/control/mode", {"auto_touch_ms": None})

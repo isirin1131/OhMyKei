@@ -313,9 +313,6 @@ static uint8_t cmd_reset(omk_ctap *ct) {
 
 static uint8_t cmd_selection(omk_ctap *ct) {
     const uint8_t up = omk_ctap_wait_up(ct);
-    if (up == OMK_CTAP2_ERR_KEEPALIVE_CANCEL) {
-        return OMK_CTAP2_ERR_OPERATION_DENIED;
-    }
     if (up != OMK_CTAP2_OK) {
         return up;
     }
