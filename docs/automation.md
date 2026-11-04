@@ -62,36 +62,65 @@ HTTP 服务是测试控制面。模拟器可见于 Colima/Linux；Mac 上的原�
 
 ## 官方工具
 
-本地工具版本 1.9.3.1，原 Electron 为 41.7.0。包内只有 Mac/Windows 安装程序。
-`prepare_official.py` 按字节复制运行源码与测试模块到忽略目录，并记录哈希；不复制
-`.env`、签名配置或 Mac 原生依赖。`official.Dockerfile` 提供同版本 Electron 和
-相同版本的顶层依赖，原生模块针对 Linux 重建。测试源码和 HID 实现不做修改。
-
-官方自动化接口依据：
-[FIDO Automation.md](https://github.com/fido-alliance/conformance-test-tools-resources/blob/main/docs/FIDO2/Automation.md)。
+本地工具版本 1.9.3.1，Electron 为 41.7.0。`prepare_official.py` 按字节复制
+运行源码与测试模块并记录哈希；Linux 原生依赖单独重建，官方测试、断言、HID
+实现和 Mocha 均不修改。npm 使用从已验证镜像提取的锁文件和 `npm ci`。
+临时使用期间复用已构建镜像；apt 软件包未建立快照，重建后以报告中的镜像 ID 区分环境。
 
 ```sh
+# 默认执行 CTAP 2.3 认证器完整清单
 python3 host/virtual/run.py official
+
+# 约数秒的 GetInfo / PIN 协商冒烟
+python3 host/virtual/run.py official --suite smoke
+
+# 只跑元数据；--group 可重复指定，名称来自官方 authr-testlist.json
+python3 host/virtual/run.py official --group Metadata
+
+# 用官方 Mocha 的标题正则筛选某一组中的用例
+python3 host/virtual/run.py official --group MakeCredentialRequest --grep 'F-9'
 ```
 
-该命令准备 `ohmykei-conformance` 专用容器，在 Xvfb 中启动干净的原版 Electron
-会话，以 CDP 配置并执行 CTAP 2.3 Generic/GetInfo、PIN 1/2 密钥协商最小集合。
-每轮使用空的合成 Flash 和独立 Electron 配置目录；运行结束停止该会话的虚拟设备、
-Electron 和 Xvfb。它不置前 macOS 窗口、不注入键鼠，不修改官方测试或 Mocha。
-官方会话禁用自动触摸，只由 `/conformance/userpresence` 驱动 UP。
+默认全量截止时间为 1800 秒，冒烟为 180 秒；可用 `--timeout 秒数` 修改。
+每轮在 Xvfb 中启动干净的 Electron 会话，使用空的合成 Flash、独立配置目录和
+官方 HTTP 自动化回调提供 UP。结束或超时后停止该会话的设备、Electron 和 Xvfb。
+不置前 macOS 窗口、不注入键鼠，也不覆盖官方重试策略。
+接口依据：[FIDO Automation.md](https://github.com/fido-alliance/conformance-test-tools-resources/blob/main/docs/FIDO2/Automation.md)。
 
-固定测试元数据位于 `host/virtual/metadata.json`；空库容量期望为 64，来自项目的
-容量契约，不能用当次 GetInfo 响应自动生成期望值。运行报告位于
-`build/virtual-hid/official/session-*/smoke-result.json`。
-这是选定的官方最小回归，完整 CTAP 2.3 套件仍需单独执行和记录。
+统一报告为 `build/virtual-hid/official/session-*/result.json`，运行中持续保存：
 
-2026-11-04 已完成一键验收：官方最小集 **5 通过、2 能力不适用跳过、0 失败**，
-运行器耗时 6.622 秒。对应 GetInfo 的两个跳过项为可选的 `encIdentifier` 与
-`encCredStoreState`。官方测试、断言、HID 实现和 Mocha 均未修改。
-自有完整入口同时通过 9/9 核心测试和 10/10 HID 回归（分别 14.98 和 18.197 秒）。
+- 本轮选择的文件、完整用例标识、最终状态、未完成项和重试事件。
+- 官方跳过状态；Mocha 不提供跳过原因，报告明确标注未提供，不自动猜测为能力不适用。
+- 脱敏错误类别、CTAP 状态码和源码栈位置；不保存原始报文、断言载荷或 PIN/token。
+- 源码提交、工作区是否有已跟踪修改、镜像 ID，以及二进制、元数据、驱动、依赖锁和
+  官方源码清单的 SHA-256。`environment.json` 单独保留相同环境信息。
 
-依赖镜像发生变化时，启动脚本停止并重命名旧的专用容器，保留它后创建匹配镜像的
-新容器；不会删除旧容器。`stop` 会停止当前两个专用容器。
+退出码：`0` 表示所选测试完整结束、无失败、至少一项通过且选中的必跑基线通过；
+`1` 表示完整执行后有测试失败；`2` 表示环境异常、超时、漏跑或无法判断（例如全跳过）；
+`130` 表示中断。必跑基线为 GetInfo P-1/P-2/P-3 与 PIN 1/2 协商 P-1；分组或正则
+筛选时只要求其中被选中的用例。用例总数动态来自官方清单，不硬编码 326。
+
+固定测试元数据位于 `host/virtual/metadata.json`；空库容量期望独立设为 64，
+不使用本轮响应生成期望。元数据已修正 CTAP 版本映射、FIDO2 不适用的顶层
+`supportedExtensions` 和 MDS3 `legalHeader`。
+
+2026-11-04 首轮全清单结果：**183 通过、118 官方跳过、25 失败**，734.027 秒。
+其中 4 个失败属于上述元数据配置，其余 21 个协议用例仍需单独定位；不能等同于
+25 个独立固件缺陷。历史报告为 `session-zazn96l0/full-result.json`。
+完善后的全量验收：**187 通过、118 官方跳过、21 失败**，731.067 秒，退出码 `1`；
+326 项全部有最终状态，没有漏跑、重复或必跑项跳过。63 次官方重试全部来自最终失败
+用例。报告为 `build/virtual-hid/official/session-llwe__pk/result.json`。
+元数据分组为 25 通过、12 跳过、0 失败，确认旧的 4 项配置错误已消除。
+
+另已验证：7/7 判定回归、冒烟 5/2/0 返回 `0`、NFC 全 8 项跳过返回 `2`、一秒
+截止留下不完整报告并返回 `2`；supervisor SIGTERM 与宿主 Ctrl-C 均返回 `130`。
+宿主中断后可正常重启完整会话。本地镜像关闭构建证明生成，重复缓存构建摘要稳定，
+能复用容器。自有回归此前为 9/9 核心和 10/10 HID 通过，本轮未重复执行。
+
+
+依赖镜像变化时，脚本停止并重命名旧专用容器后创建新容器，不删除旧容器。
+`python3 host/virtual/run.py stop` 停止当前两个专用容器。报告保留，临时合成 Flash
+和浏览器配置在任务完成后移入回收站；不读取其中的凭据数据。
 
 ## 覆盖边界
 

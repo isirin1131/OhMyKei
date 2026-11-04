@@ -1,13 +1,14 @@
 // Minimal CDP client for the isolated official tool, without UI input injection.
 import {pathToFileURL} from 'node:url';
 export async function connect() {
-    const pages = await (await fetch('http://127.0.0.1:9222/json/list')).json();
+    const pages = await (await fetch('http://127.0.0.1:9222/json/list', {signal:AbortSignal.timeout(5000)})).json();
     const page = pages.find(p => p.type === 'page');
     if (!page) throw Error('Official tool has no page');
     const socket = new WebSocket(page.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => {
-        socket.addEventListener('open', resolve, {once: true});
-        socket.addEventListener('error', reject, {once: true});
+        const timer = setTimeout(() => {socket.close(); reject(Error('CDP connection timed out'));}, 5000);
+        socket.addEventListener('open', () => {clearTimeout(timer); resolve();}, {once: true});
+        socket.addEventListener('error', () => {clearTimeout(timer); reject(Error('CDP connection failed'));}, {once: true});
     });
     let sequence = 0;
     const pending = new Map();
@@ -18,8 +19,15 @@ export async function connect() {
         pending.delete(response.id);
         clearTimeout(call.timer);
         if (response.error || response.result?.exceptionDetails)
-            call.reject(Error(JSON.stringify(response.error || response.result.exceptionDetails)));
+            call.reject(Error('CDP evaluation failed'));
         else call.resolve(response.result.result?.value);
+    });
+    socket.addEventListener('close', () => {
+        for (const call of pending.values()) {
+            clearTimeout(call.timer);
+            call.reject(Error('CDP connection closed'));
+        }
+        pending.clear();
     });
     return {
         evaluate(expression, timeout = 15000) {

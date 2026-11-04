@@ -1,5 +1,5 @@
 {
-  "legalHeader": "https://fidoalliance.org/metadata/metadata-statement-legal-header/",
+  "legalHeader": "Submission of this statement and retrieval and use of this statement indicates acceptance of the appropriate agreement located at https://fidoalliance.org/metadata/metadata-legal-terms/.",
   "description": "OhMyKei Development FIDO2 Authenticator",
   "aaguid": "68d840c1-b0aa-5d75-bbbb-c4f3f6c789b3",
   "protocolFamily": "fido2",
@@ -11,12 +11,12 @@
       "minor": 0
     },
     {
-      "major": 2,
-      "minor": 0
+      "major": 1,
+      "minor": 1
     },
     {
-      "major": 2,
-      "minor": 1
+      "major": 1,
+      "minor": 3
     }
   ],
   "authenticationAlgorithms": [
@@ -75,20 +75,6 @@
   ],
   "tcDisplay": [],
   "attestationRootCertificates": [],
-  "supportedExtensions": [
-    {
-      "id": "hmac-secret",
-      "fail_if_unknown": false
-    },
-    {
-      "id": "credProtect",
-      "fail_if_unknown": false
-    },
-    {
-      "id": "hmac-secret-mc",
-      "fail_if_unknown": false
-    }
-  ],
   "authenticatorGetInfo": {
     "versions": [
       "FIDO_2_0",

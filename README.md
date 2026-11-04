@@ -150,10 +150,12 @@ and Ed25519 signatures, PIN protocols, credential management, persistence,
 cancellation, user presence and the Reset window. See [virtual HID automation](docs/automation.md)
 for setup, persistent-device mode and the official-tool integration boundary.
 
-`python3 host/virtual/run.py official` runs a clean instance of the local
-official v1.9.3.1 tool under Linux Electron 41.7.0. Its selected GetInfo and
-PIN 1/2 key-agreement smoke passed 5 tests with 2 unsupported-feature skips
-on 2026-11-04; this is not a full conformance-suite result.
+`python3 host/virtual/run.py official` runs the full CTAP 2.3 authenticator
+list using official v1.9.3.1 under Linux Electron 41.7.0. Use `--suite smoke`
+for the short GetInfo/PIN check, or `--group Metadata` / `--grep` for focused
+runs. The completed full run after metadata corrections recorded 187 passes,
+118 skips and 21 protocol-test failures; all 326 cases reached a final state. See [automation.md](docs/automation.md)
+for result files, exit codes and current validation; this is not a certification pass.
 
 The host build is deliberately independent of `pico-sdk`, so protocol code can be tested on macOS/Linux with sanitizers:
 

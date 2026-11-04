@@ -86,8 +86,15 @@ smoke passed 5 tests, skipped 2 unsupported-feature cases, and failed none
 capacity expectation of 64. Official UP runs through its HTTP callback, with
 the simulator's automatic touch disabled.
 
+The first full CTAP 2.3 list completed with 183 passes, 118 skips and 25 failures
+(734.027 seconds); four were metadata configuration errors now corrected.
+The official entry now defaults to the full list, with smoke/group/title filters,
+coverage checks, retry records and environment hashes. npm dependencies are locked.
+Acceptance completed all 326 cases: 187 passes, 118 skips and 21 protocol-test
+failures in 731.067 seconds. The 37 metadata cases now have no failures.
+Seven runner checks and real skip/timeout/interruption paths also passed.
 This does not emulate RP2350 instructions, TinyUSB, the hardware RNG or Flash
-timing. The full official corpus has not been run by this automation.
+timing; protocol failures still require separate diagnosis.
 Commands and current evidence: [automation.md](automation.md).
 
 ### Fuzz targets

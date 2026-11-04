@@ -9,7 +9,8 @@ RUN apt-get update && apt-get install -y --no-remove --no-install-recommends \
     libgtk-3-0 xvfb xauth
 WORKDIR /opt/fido
 COPY official-package.json package.json
-RUN node /usr/local/lib/node_modules/npm/bin/npm-cli.js install --omit=dev --no-audit --no-fund
+COPY official-package-lock.json package-lock.json
+RUN node /usr/local/lib/node_modules/npm/bin/npm-cli.js ci --omit=dev --no-audit --no-fund
 RUN node node_modules/@electron/rebuild/lib/cli.js --version 41.7.0 --force
 ENV NODE_PATH=/opt/fido/node_modules
 WORKDIR /workspace

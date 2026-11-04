@@ -20,7 +20,15 @@ def main():
     global ACTIVE_CONTAINER
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["test", "serve", "official", "build", "stop"])
+    parser.add_argument("--suite", choices=["full", "smoke"], default="full")
+    parser.add_argument("--group", action="append", default=[], help="Official group, e.g. Metadata; repeatable")
+    parser.add_argument("--grep", default="", help="Official Mocha title regex")
+    parser.add_argument("--timeout", type=int, help="Official run deadline in seconds (default: full 1800, smoke 180)")
     args = parser.parse_args()
+    if args.timeout is not None and args.timeout <= 0:
+        parser.error("--timeout must be positive")
+    if args.suite == "smoke" and args.group:
+        parser.error("--group requires --suite full")
     if args.action == "stop":
         for name in (CONTAINER, "ohmykei-conformance"):
             found = subprocess.run(DOCKER + ["container", "inspect", name], capture_output=True)
@@ -28,13 +36,14 @@ def main():
                 run(*DOCKER, "stop", name)
         return
     run("colima", "ssh", "--", "python3", str(ROOT / "host/virtual/load_uhid.py"))
-    run(*DOCKER, "build", "-t", IMAGE, str(ROOT / "host/virtual"))
+    # Local test images: stable digests keep cached rebuilds from replacing containers.
+    run(*DOCKER, "build", "--provenance=false", "-t", IMAGE, str(ROOT / "host/virtual"))
     image = IMAGE
     if args.action == "official":
         ACTIVE_CONTAINER = "ohmykei-conformance"
         image = "ohmykei-conformance:1"
         run("python3", str(ROOT / "host/virtual/prepare_official.py"))
-        run(*DOCKER, "build", "-f", str(ROOT / "host/virtual/official.Dockerfile"),
+        run(*DOCKER, "build", "--provenance=false", "-f", str(ROOT / "host/virtual/official.Dockerfile"),
             "-t", image, str(ROOT / "host/virtual"))
     state = subprocess.run(DOCKER + ["container", "inspect", ACTIVE_CONTAINER],
                            capture_output=True, text=True)
@@ -75,7 +84,20 @@ def main():
         run(*execute, "python", "host/virtual/service.py", "--listen", "0.0.0.0",
             "--flash", "build/virtual-hid/device.flash")
     elif args.action == "official":
-        run(*execute, "python", "host/virtual/official_session.py", "--smoke")
+        image_id = subprocess.check_output(DOCKER + ["image", "inspect", image, "--format", "{{.Id}}"],
+                                           text=True).strip()
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        dirty = subprocess.run(["git", "diff", "HEAD", "--quiet"], cwd=ROOT).returncode != 0
+        options = ["--suite", args.suite, "--grep", args.grep]
+        for group in args.group:
+            options += ["--group", group]
+        if args.timeout is not None:
+            options += ["--timeout", str(args.timeout)]
+        result = subprocess.run(DOCKER + ["exec", "-w", "/workspace",
+            "-e", "OMK_TEST_IMAGE_ID=" + image_id, "-e", "OMK_TEST_COMMIT=" + commit,
+            "-e", "OMK_TEST_DIRTY=" + str(dirty).lower(), ACTIVE_CONTAINER,
+            "python", "host/virtual/official_session.py", *options])
+        raise SystemExit(result.returncode)
 
 
 if __name__ == "__main__":
@@ -83,6 +105,12 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         # docker exec's client does not reliably forward Ctrl-C into the guest.
+        if ACTIVE_CONTAINER == "ohmykei-conformance":
+            subprocess.run(DOCKER + ["exec", ACTIVE_CONTAINER, "pkill", "-TERM", "-f",
+                "^python host/virtual/official_session.py( |$)"], check=False)
+            subprocess.run(DOCKER + ["exec", ACTIVE_CONTAINER, "timeout", "15", "sh", "-c",
+                "while pgrep -f '^python host/virtual/official_session.py( |$)' >/dev/null; do sleep 0.1; done"],
+                check=False)
         # This dedicated container owns all of our virtual device processes.
         subprocess.run(DOCKER + ["stop", "--time", "3", ACTIVE_CONTAINER], check=False)
         raise SystemExit(130)
