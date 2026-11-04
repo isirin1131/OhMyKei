@@ -281,8 +281,8 @@ static void handle_init(omk_ctaphid *h, uint32_t cid, uint16_t bcnt,
     }
 
     uint8_t resp[17];
-    wr_be32(resp, new_cid);
-    memcpy(resp + 4, payload, 8);
+    memcpy(resp, payload, 8);
+    wr_be32(resp + 8, new_cid);
     resp[12] = 2; /* CTAPHID protocol version */
     resp[13] = (uint8_t)h->version_major;
     resp[14] = (uint8_t)h->version_minor;

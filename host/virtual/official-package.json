@@ -1,0 +1,26 @@
+{
+  "name": "ohmykei-conformance-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": {
+    "electron": "41.7.0",
+    "@electron/rebuild": "4.0.1",
+    "@stoprocent/noble": "2.5.3",
+    "body-parser": "1.20.2",
+    "cbor": "5.2.0",
+    "cross-spawn": "7.0.6",
+    "electron-context-menu": "0.16.0",
+    "electron-is-dev": "1.2.0",
+    "elliptic": "6.6.1",
+    "express": "4.18.2",
+    "futoin-hkdf": "1.5.3",
+    "nan": "2.26.2",
+    "node-abi": "4.31.0",
+    "node-gyp": "12.3.0",
+    "node-hid": "2.1.2",
+    "node-rsa": "1.1.1",
+    "pcsclite": "1.0.1",
+    "selfsigned": "1.10.14",
+    "usb": "2.17.0"
+  }
+}

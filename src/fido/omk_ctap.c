@@ -116,7 +116,6 @@ void omk_ctap_cm_clear(omk_ctap *ct) {
 void omk_ctap_pin_shared_clear(omk_ctap *ct) {
     omk_memzero(ct->pin.shared_aes, sizeof ct->pin.shared_aes);
     omk_memzero(ct->pin.shared_hmac, sizeof ct->pin.shared_hmac);
-    ct->pin.shared_ready = false;
     ct->pin.protocol = 0;
 }
 
@@ -441,7 +440,6 @@ int omk_ctap_init(omk_ctap *ct, const omk_port *port, omk_ctaphid *hid) {
     memcpy(ct->pin.key_priv, kp.d, 32);
     memcpy(ct->pin.key_pub, kp.pub, 65);
     omk_memzero(&kp, sizeof kp);
-    ct->pin_initialized = true;
     ct->boot_ms = port->now_ms(port->ctx);
     return 0;
 }

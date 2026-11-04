@@ -21,7 +21,8 @@ Implemented:
 - Strict CTAP2 CBOR decoder/encoder (duplicate keys, indefinite lengths and
   non-minimal encodings rejected).
 - ES256 (P-256, RFC 6979) and EdDSA (Ed25519) credentials, self-attestation
-  (`packed`) and `none`.
+  (`packed`) and `none`. ES256 wire signatures use ASN.1 DER; Ed25519 stays
+  64 bytes. MakeCredential reads `attestationFormatsPreference` at `0x0B`.
 - Resident and non-resident credentials, RP/user overwrite semantics,
   lease-based signature counter, dual-bank credential log and compaction.
 - Version 2 append-only meta log (8 sectors of 256-byte snapshots) plus two
@@ -32,7 +33,8 @@ Implemented:
   permissions and RP binding, persistent retry counter with a journaled PIN
   candidate resolved at boot.
 - `hmac-secret` (32/64-byte salts, `age`/PRF use), `hmac-secret-mc`,
-  `credProtect`, CredentialManagement enumeration/delete/update.
+  `credProtect`, CredentialManagement enumeration/delete/update using
+  `PublicKeyCredentialDescriptor` maps for credential identifiers.
 - Host tests (12 registered CTest entries under ASan + non-recoverable UBSan)
   and libFuzzer harnesses for CBOR and CTAPHID.
 
@@ -40,15 +42,21 @@ Not implemented yet (kept out of `getInfo`): `authenticatorConfig`,
 `credBlob`, `largeBlobs`, U2F/CTAP1, built-in UV/biometrics, `alwaysUv`, and
 the second-batch `minPinLength` policy hooks.
 
-> **Verification state:** a clean host build with AddressSanitizer and
-> non-recoverable UndefinedBehaviorSanitizer currently passes all 12 registered
-> CTest entries (`ctest --preset host`). This result does **not** include a
-> libFuzzer run; the fuzz preset was not executed in this checkout. A Release
+> **Verification state (2026-11-04):** the host build with AddressSanitizer
+> and non-recoverable UndefinedBehaviorSanitizer passed all nine executable
+> tests after the CTAP/PIN cleanup. Three build probes passed earlier in the
+> protocol-fix pass using isolated temporary copies with destructive cleanup
+> omitted; they were not rerun for this cleanup. See [audit evidence](docs/audit-plan.md#55-2026-11-04-ctappin-过度防御清理).
+> This result does **not** include a libFuzzer run. A Release
 > firmware build passes the committed `layout-check` target (32 KiB stack and
 > image placed below the upper 1 MiB store). The firmware has **not** been run against the FIDO
 > Alliance conformance suite on physical hardware, and there has been **no
 > physical power-cut test**. Treat this as a development build, not a
 > certified authenticator.
+
+The CTAP/PIN cleanup removes duplicate curve and post-decryption length
+checks, unused state flags and the duplicate token-validity query. Extension
+HMAC keys now remain local to request parsing and are cleared after use.
 
 ---
 
@@ -129,6 +137,23 @@ mechanism.
 ---
 
 ## Host Tests & Fuzzing
+
+For automated end-to-end testing without a board, with Colima already running:
+
+```bash
+python3 host/virtual/run.py test
+```
+
+This builds the real core with ASan/UBSan, runs the nine executable host tests,
+then runs ten `python-fido2` tests through Linux hidraw/UHID. It verifies ES256
+and Ed25519 signatures, PIN protocols, credential management, persistence,
+cancellation, user presence and the Reset window. See [virtual HID automation](docs/automation.md)
+for setup, persistent-device mode and the official-tool integration boundary.
+
+`python3 host/virtual/run.py official` runs a clean instance of the local
+official v1.9.3.1 tool under Linux Electron 41.7.0. Its selected GetInfo and
+PIN 1/2 key-agreement smoke passed 5 tests with 2 unsupported-feature skips
+on 2026-11-04; this is not a full conformance-suite result.
 
 The host build is deliberately independent of `pico-sdk`, so protocol code can be tested on macOS/Linux with sanitizers:
 
@@ -238,6 +263,10 @@ in the current checkout; it is not evidence that libFuzzer has run.
   decision rather than an automatic factory format.
 
 ## Current limitations
+
+This is the dev phase. OTP provisioning and boot/flash locking are outside
+the current implementation scope; their absence is a development boundary,
+not a defect introduced by these protocol changes.
 
 - The RP2350 RNG adapter cannot detect or propagate entropy-source failure;
   `pico_rand` must not be treated as satisfying the core CSPRNG/failure

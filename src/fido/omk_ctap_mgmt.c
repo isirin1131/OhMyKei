@@ -4,6 +4,39 @@
 #include "fido/omk_cbor.h"
 #include "fido/omk_ctap_internal.h"
 
+static void put_descriptor(omk_cbor_enc *e, const omk_credential *c) {
+    omk_cbor_put_map(e, 2);
+    omk_cbor_put_text(e, "id", 2);
+    omk_cbor_put_bytes(e, c->id, c->id_len);
+    omk_cbor_put_text(e, "type", 4);
+    omk_cbor_put_text(e, "public-key", 10);
+}
+
+static uint8_t parse_descriptor(const omk_cbor_doc *doc,
+                                 const omk_cbor_val *descriptor,
+                                 const omk_cbor_val **id) {
+    if (descriptor == NULL) {
+        return OMK_CTAP2_ERR_MISSING_PARAMETER;
+    }
+    if (descriptor->type != OMK_CBOR_MAP) {
+        return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
+    }
+    *id = omk_cbor_map_get_text(doc, descriptor, "id", 2);
+    const omk_cbor_val *type =
+        omk_cbor_map_get_text(doc, descriptor, "type", 4);
+    if (*id == NULL || type == NULL) {
+        return OMK_CTAP2_ERR_MISSING_PARAMETER;
+    }
+    if ((*id)->type != OMK_CBOR_BYTES || (*id)->len == 0 ||
+        (*id)->len > OMK_CRED_ID_MAX || type->type != OMK_CBOR_TEXT) {
+        return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
+    }
+    if (type->len != 10 || memcmp(type->data, "public-key", 10) != 0) {
+        return OMK_CTAP1_ERR_INVALID_PARAMETER;
+    }
+    return OMK_CTAP2_OK;
+}
+
 static void put_user(omk_cbor_enc *e, const omk_credential *c) {
     size_t pairs = 1;
     if (c->user_name_len != 0) {
@@ -221,114 +254,15 @@ static uint8_t sub_enum_rps_next(omk_ctap *ct) {
     return e.overflow ? OMK_CTAP2_ERR_REQUEST_TOO_LARGE : OMK_CTAP2_OK;
 }
 
-static uint8_t sub_enum_creds_begin(omk_ctap *ct, const omk_cbor_doc *doc,
-                                    const omk_cbor_val *params) {
+/* total is nonzero only for the first response in an enumeration. */
+static uint8_t emit_cm_credential(omk_ctap *ct, const omk_credential *c,
+                                   uint8_t total) {
     uint8_t seed[32] = {0};
     uint8_t pub[65] = {0};
     uint8_t cose[128] = {0};
     uint8_t status = OMK_CTAP2_OK;
-
-    if (params == NULL || params->type != OMK_CBOR_MAP) {
-        return OMK_CTAP2_ERR_MISSING_PARAMETER;
-    }
-    const omk_cbor_val *hash = omk_cbor_map_get_int(doc, params, 0x01);
-    if (hash == NULL) {
-        return OMK_CTAP2_ERR_MISSING_PARAMETER;
-    }
-    if (hash->type != OMK_CBOR_BYTES || hash->len != 32) {
-        return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
-    }
-    uint8_t idxs[OMK_MAX_CREDENTIALS];
-    uint8_t count = 0;
-    collect_rp_credentials(ct, hash->data, idxs, &count);
-    if (count == 0) {
-        return OMK_CTAP2_ERR_NO_CREDENTIALS;
-    }
-    ct->cm.valid = true;
-    ct->cm.kind = 2;
-    memcpy(ct->cm.rp_hash, hash->data, 32);
-    for (uint8_t i = 0; i < count; i++) {
-        ct->cm.cred_seqs[i] = ct->store.creds[idxs[i]].seq;
-    }
-    ct->cm.count = count;
-    ct->cm.next = 1;
-    ct->cm.expires_ms = omk_ctap_now_ms(ct) + OMK_CTAP_GA_STATE_MS;
 
     /* The record does not carry the private seed: open the sealed ID. */
-    const omk_credential *c = &ct->store.creds[idxs[0]];
-    uint8_t alg = 0, cp = 0;
-    bool resident = false;
-    if (!omk_store_open_credential(&ct->store, hash->data, c->id, c->id_len,
-                                   seed, &alg, &cp, &resident)) {
-        status = OMK_CTAP2_ERR_INVALID_CREDENTIAL;
-        goto done;
-    }
-    size_t pub_len = 0;
-    if (!omk_ctap_cred_public_key(alg, seed, pub, &pub_len)) {
-        status = OMK_CTAP2_ERR_OTHER;
-        goto done;
-    }
-    const size_t n = omk_ctap_build_cose_key(cose, sizeof cose, alg, pub);
-    if (n == 0) {
-        status = OMK_CTAP2_ERR_OTHER;
-        goto done;
-    }
-    omk_cbor_enc e;
-    omk_cbor_enc_init(&e, ct->response, sizeof ct->response);
-    omk_cbor_put_map(&e, 5);
-    omk_cbor_put_uint(&e, 6);
-    put_user(&e, c);
-    omk_cbor_put_uint(&e, 7);
-    omk_cbor_put_bytes(&e, c->id, c->id_len);
-    omk_cbor_put_uint(&e, 8);
-    omk_cbor_put_raw(&e, cose, n);
-    omk_cbor_put_uint(&e, 9);
-    omk_cbor_put_uint(&e, count);
-    omk_cbor_put_uint(&e, 10);
-    omk_cbor_put_uint(&e, cp);
-    ct->response_len = e.len;
-    status = e.overflow ? OMK_CTAP2_ERR_REQUEST_TOO_LARGE : OMK_CTAP2_OK;
-
-done:
-    omk_memzero(seed, sizeof seed);
-    omk_memzero(pub, sizeof pub);
-    omk_memzero(cose, sizeof cose);
-    if (status != OMK_CTAP2_OK) {
-        omk_ctap_cm_clear(ct);
-    }
-    return status;
-}
-
-static uint8_t sub_enum_creds_next(omk_ctap *ct) {
-    uint8_t seed[32] = {0};
-    uint8_t pub[65] = {0};
-    uint8_t cose[128] = {0};
-    uint8_t status = OMK_CTAP2_OK;
-
-    if (!ct->cm.valid || ct->cm.kind != 2 ||
-        omk_ctap_now_ms(ct) > ct->cm.expires_ms ||
-        ct->cm.next >= ct->cm.count) {
-        omk_ctap_cm_clear(ct);
-        return OMK_CTAP2_ERR_NOT_ALLOWED;
-    }
-    const omk_credential *c = NULL;
-    /* Deletion shifts the RAM index array.  Resolve each snapshot sequence
-     * against current records and skip entries deleted since enumeration
-     * began instead of returning the wrong credential or a stale index. */
-    while (c == NULL && ct->cm.next < ct->cm.count) {
-        const uint32_t seq = ct->cm.cred_seqs[ct->cm.next++];
-        for (uint8_t i = 0; i < ct->store.cred_count; i++) {
-            if (ct->store.creds[i].seq == seq &&
-                memcmp(ct->store.creds[i].rp_id_hash, ct->cm.rp_hash, 32) == 0) {
-                c = &ct->store.creds[i];
-                break;
-            }
-        }
-    }
-    if (c == NULL) {
-        status = OMK_CTAP2_ERR_NOT_ALLOWED;
-        goto done;
-    }
     uint8_t alg = 0, cp = 0;
     bool resident = false;
     if (!omk_store_open_credential(&ct->store, ct->cm.rp_hash, c->id, c->id_len,
@@ -348,13 +282,17 @@ static uint8_t sub_enum_creds_next(omk_ctap *ct) {
     }
     omk_cbor_enc e;
     omk_cbor_enc_init(&e, ct->response, sizeof ct->response);
-    omk_cbor_put_map(&e, 4);
+    omk_cbor_put_map(&e, total != 0 ? 5 : 4);
     omk_cbor_put_uint(&e, 6);
     put_user(&e, c);
     omk_cbor_put_uint(&e, 7);
-    omk_cbor_put_bytes(&e, c->id, c->id_len);
+    put_descriptor(&e, c);
     omk_cbor_put_uint(&e, 8);
     omk_cbor_put_raw(&e, cose, n);
+    if (total != 0) {
+        omk_cbor_put_uint(&e, 9);
+        omk_cbor_put_uint(&e, total);
+    }
     omk_cbor_put_uint(&e, 10);
     omk_cbor_put_uint(&e, cp);
     ct->response_len = e.len;
@@ -364,6 +302,58 @@ done:
     omk_memzero(seed, sizeof seed);
     omk_memzero(pub, sizeof pub);
     omk_memzero(cose, sizeof cose);
+    return status;
+}
+
+/* The command entry point validates and authorizes rp_hash before this call. */
+static uint8_t sub_enum_creds_begin(omk_ctap *ct, const uint8_t rp_hash[32]) {
+    uint8_t idxs[OMK_MAX_CREDENTIALS];
+    uint8_t count = 0;
+    collect_rp_credentials(ct, rp_hash, idxs, &count);
+    if (count == 0) {
+        return OMK_CTAP2_ERR_NO_CREDENTIALS;
+    }
+    ct->cm.valid = true;
+    ct->cm.kind = 2;
+    memcpy(ct->cm.rp_hash, rp_hash, 32);
+    for (uint8_t i = 0; i < count; i++) {
+        ct->cm.cred_seqs[i] = ct->store.creds[idxs[i]].seq;
+    }
+    ct->cm.count = count;
+    ct->cm.next = 1;
+    ct->cm.expires_ms = omk_ctap_now_ms(ct) + OMK_CTAP_GA_STATE_MS;
+
+    const uint8_t status =
+        emit_cm_credential(ct, &ct->store.creds[idxs[0]], count);
+    if (status != OMK_CTAP2_OK) {
+        omk_ctap_cm_clear(ct);
+    }
+    return status;
+}
+
+static uint8_t sub_enum_creds_next(omk_ctap *ct) {
+    if (!ct->cm.valid || ct->cm.kind != 2 ||
+        omk_ctap_now_ms(ct) > ct->cm.expires_ms ||
+        ct->cm.next >= ct->cm.count) {
+        omk_ctap_cm_clear(ct);
+        return OMK_CTAP2_ERR_NOT_ALLOWED;
+    }
+    const omk_credential *c = NULL;
+    /* Deletion shifts the RAM index array. Resolve each snapshot sequence
+     * against current records and skip entries deleted since enumeration
+     * began instead of returning the wrong credential or a stale index. */
+    while (c == NULL && ct->cm.next < ct->cm.count) {
+        const uint32_t seq = ct->cm.cred_seqs[ct->cm.next++];
+        for (uint8_t i = 0; i < ct->store.cred_count; i++) {
+            if (ct->store.creds[i].seq == seq &&
+                memcmp(ct->store.creds[i].rp_id_hash, ct->cm.rp_hash, 32) == 0) {
+                c = &ct->store.creds[i];
+                break;
+            }
+        }
+    }
+    const uint8_t status = c != NULL ? emit_cm_credential(ct, c, 0)
+                                     : OMK_CTAP2_ERR_NOT_ALLOWED;
     if (status != OMK_CTAP2_OK || ct->cm.next >= ct->cm.count) {
         omk_ctap_cm_clear(ct);
     }
@@ -410,20 +400,18 @@ uint8_t omk_ctap_cmd_credmgmt(omk_ctap *ct, const omk_cbor_doc *doc,
             return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
         }
         status = check_cm_auth(ct, doc, req, 0x04, params, rp->data, &uv);
-        return status == OMK_CTAP2_OK ? sub_enum_creds_begin(ct, doc, params)
+        return status == OMK_CTAP2_OK ? sub_enum_creds_begin(ct, rp->data)
                                       : status;
     }
     case 0x06: {
         if (params == NULL || params->type != OMK_CBOR_MAP) {
             return OMK_CTAP2_ERR_MISSING_PARAMETER;
         }
-        const omk_cbor_val *id = omk_cbor_map_get_int(doc, params, 0x02);
-        if (id == NULL) {
-            return OMK_CTAP2_ERR_MISSING_PARAMETER;
-        }
-        if (id->type != OMK_CBOR_BYTES || id->len == 0 ||
-            id->len > OMK_CRED_ID_MAX) {
-            return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
+        const omk_cbor_val *id = NULL;
+        status = parse_descriptor(
+            doc, omk_cbor_map_get_int(doc, params, 0x02), &id);
+        if (status != OMK_CTAP2_OK) {
+            return status;
         }
         const omk_credential *c =
             omk_store_find_id(&ct->store, id->data, id->len);
@@ -448,13 +436,17 @@ uint8_t omk_ctap_cmd_credmgmt(omk_ctap *ct, const omk_cbor_doc *doc,
         if (params == NULL || params->type != OMK_CBOR_MAP) {
             return OMK_CTAP2_ERR_MISSING_PARAMETER;
         }
-        const omk_cbor_val *id = omk_cbor_map_get_int(doc, params, 0x02);
+        const omk_cbor_val *id = NULL;
+        status = parse_descriptor(
+            doc, omk_cbor_map_get_int(doc, params, 0x02), &id);
+        if (status != OMK_CTAP2_OK) {
+            return status;
+        }
         const omk_cbor_val *user = omk_cbor_map_get_int(doc, params, 0x03);
-        if (id == NULL || user == NULL) {
+        if (user == NULL) {
             return OMK_CTAP2_ERR_MISSING_PARAMETER;
         }
-        if (id->type != OMK_CBOR_BYTES || id->len == 0 ||
-            id->len > OMK_CRED_ID_MAX || user->type != OMK_CBOR_MAP) {
+        if (user->type != OMK_CBOR_MAP) {
             return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
         }
         const omk_credential *c =

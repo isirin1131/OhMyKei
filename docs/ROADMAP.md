@@ -18,6 +18,18 @@
 
 ## 当前状态
 
+- 2026-11-04：Colima + UHID 自动化链路已打通；真实 `omk_core` 的九项 Linux
+  sanitizer 测试和十项 `python-fido2` HID 端到端回归通过。包含独立验签、PIN、
+  凭据管理、持久化、取消与 Reset 窗口；使用方法和官方工具接入状态见
+  [自动化测试](automation.md)。此结果不等同于官方套件全量通过或硬件实测。
+- 官方 v1.9.3.1 已在 Linux Electron 41.7.0 下连接虚拟设备，选定的 GetInfo、
+  PIN 1/2 密钥协商最小集为 **5 通过 / 2 能力不适用跳过 / 0 失败**；完整官方
+  CTAP 2.3 默认配置套件仍待后续展开。源码、断言和 HID 实现均未修改。
+
+- 2026-11-04：修复 ES256 DER 签名、凭据管理 descriptor map、MakeCredential
+  `attestationFormatsPreference (0x0B)`；断言改用轻量标量检查，枚举首条/续页
+  共用响应编码，入口校验后的 RP 哈希直接传入内部函数。对应报文及边界回归已通过。
+
 - 协议核心已实现并可构建：CTAPHID（通道/分片/Keepalive/CANCEL/中止）、严格 CBOR、
   P-256/Ed25519、Flash 凭据存储、`GetInfo`/`MakeCredential`/`GetAssertion`/
   `GetNextAssertion`/`ClientPIN` 1+2/`Reset`/`Selection`/`CredentialManagement`，
@@ -28,15 +40,20 @@
   log epoch；Reset 也通过新 epoch 使旧记录失效。PIN 重试在比较前先持久化“递减计数
   + 候选哈希”，启动时解析未决尝试。
 - 固件为单 USB HID 接口（0xF1D0），UP 使用板载 BOOT 按键；已移除 CDC 调试口。
-- host 端当前注册 **12 个 CTest**（默认 ASan + 非恢复 UBSan）并已 12/12 通过：
+- host 端当前注册 **12 个 CTest**（默认 ASan + 非恢复 UBSan）；2026-11-04
+  CTAP/PIN 清理后九个可执行测试通过；三个构建探针在此前协议修复轮以无删除
+  临时副本执行通过，本轮未重复执行。注册项包含：
   8 个单元/回归可执行文件、CTAPHID fuzz replay、UBSan 非恢复探针、固件版本定义
   探针、核心无 fuzzer hook 检查。CBOR/CTAPHID 另有 libFuzzer 目标；fuzz preset
   需要 libFuzzer runtime，缺少时配置会给出明确错误。本机 Apple clang 没有该
   runtime，**本 checkout 未运行 fuzz**；命令层 harness 已改为调用真实
   `omk_ctap_handle`，但只有实际 fuzz 运行才算覆盖。CI 已加入对应 runtime 安装，
   尚未取得远端执行结果。
-- 固件 Release 构建可通过 `layout-check`：32 KiB 主栈、`__StackLimit`/`__HeapLimit`
+- 固件 Release 构建于 2026-11-04 通过 `layout-check`：32 KiB 主栈、`__StackLimit`/`__HeapLimit`
   等于栈底、镜像结束地址低于上半 1 MiB 存储区。
+- CTAP/PIN 五项技术债已清理：重复曲线校验、解密成功后的长度复查、无运行时用途的
+  状态标记、重复 PUAT 查询接口，以及扩展 HMAC 派生结果的长期保存。
+  输入边界与实际授权检查保留；验证见 [审计记录 5.5](audit-plan.md#55-2026-11-04-ctappin-过度防御清理)。
 - 2026-11-03 审计修复已落地：pinUvAuthProtocol 缺省、credProtect 回显、删除后的
   凭据/RP 枚举、同次上电脏槽重试、compaction/Reset 协作取消、固定型号 AAGUID、
   存储错误分类和 CBOR 容量检查。仍有关键发布阻塞：RNG 健康/故障传播、未分配
@@ -49,7 +66,8 @@
   v1→v2 迁移。掉电若发生在 meta 扇区擦除中途，可能留下无法识别的部分记录，
   同样需要显式恢复而不是自动格式化。
 - 主密钥与 PIN 哈希仍以明文存放于外部 Flash；OTP/安全启动加固、物理掉电压测与
-  BOOTSEL/防回滚属于第 3 阶段。
+  BOOTSEL/防回滚属于第 3 阶段。当前 dev 阶段不实施 OTP 熔丝或 boot 刷写锁定，
+  不将这些明确未纳入范围的内容列为本轮缺陷。
 
 ## 开发顺序
 

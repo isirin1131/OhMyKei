@@ -495,10 +495,12 @@ static void check_attestation_format_order(fixture *f, const char *first,
     omk_cbor_put_nint(&e, -7);
     omk_cbor_put_text(&e, "type", 4);
     omk_cbor_put_text(&e, "public-key", 10);
-    omk_cbor_put_uint(&e, 10);
-    omk_cbor_put_array(&e, 2);
+    omk_cbor_put_uint(&e, 0x0B);
+    omk_cbor_put_array(&e, second != NULL ? 2 : 1);
     omk_cbor_put_text(&e, first, strlen(first));
-    omk_cbor_put_text(&e, second, strlen(second));
+    if (second != NULL) {
+        omk_cbor_put_text(&e, second, strlen(second));
+    }
     check(!e.overflow, "attestation format request encoding");
 
     uint8_t resp[1024];
@@ -519,6 +521,64 @@ static void check_attestation_format_order(fixture *f, const char *first,
 static void test_attestation_format_order(fixture *f) {
     check_attestation_format_order(f, "none", "packed", "none");
     check_attestation_format_order(f, "packed", "none", "packed");
+    check_attestation_format_order(f, "none", NULL, "none");
+}
+
+/* Parse the wire format independently of the firmware's DER encoder. */
+static bool decode_es256_signature(const omk_cbor_val *sig, uint8_t raw[64]) {
+    if (sig == NULL || sig->type != OMK_CBOR_BYTES || sig->len < 8 ||
+        sig->len > 72 || sig->data[0] != 0x30 ||
+        sig->data[1] != sig->len - 2) {
+        return false;
+    }
+    memset(raw, 0, 64);
+    size_t pos = 2;
+    for (size_t i = 0; i < 2; i++) {
+        if (pos + 2 > sig->len || sig->data[pos++] != 0x02) {
+            return false;
+        }
+        size_t n = sig->data[pos++];
+        if (n == 0 || n > 33 || n > sig->len - pos ||
+            (sig->data[pos] & 0x80u) != 0) {
+            return false;
+        }
+        if (sig->data[pos] == 0 && n > 1) {
+            if ((sig->data[pos + 1] & 0x80u) == 0) {
+                return false; /* redundant leading zero */
+            }
+            pos++;
+            n--;
+        }
+        if (n > 32) {
+            return false;
+        }
+        memcpy(raw + i * 32 + 32 - n, sig->data + pos, n);
+        pos += n;
+    }
+    return pos == sig->len;
+}
+
+static void put_test_descriptor(omk_cbor_enc *e, const uint8_t *id,
+                                 size_t len) {
+    omk_cbor_put_map(e, 2);
+    omk_cbor_put_text(e, "id", 2);
+    omk_cbor_put_bytes(e, id, len);
+    omk_cbor_put_text(e, "type", 4);
+    omk_cbor_put_text(e, "public-key", 10);
+}
+
+static const omk_cbor_val *cm_response_id(const omk_cbor_doc *doc,
+                                         const omk_cbor_val *root) {
+    const omk_cbor_val *descriptor = omk_cbor_map_get_int(doc, root, 7);
+    const omk_cbor_val *type =
+        omk_cbor_map_get_text(doc, descriptor, "type", 4);
+    const omk_cbor_val *id = omk_cbor_map_get_text(doc, descriptor, "id", 2);
+    check(descriptor != NULL && descriptor->type == OMK_CBOR_MAP &&
+              type != NULL && type->type == OMK_CBOR_TEXT && type->len == 10 &&
+              memcmp(type->data, "public-key", 10) == 0 && id != NULL &&
+              id->type == OMK_CBOR_BYTES,
+          "CM response contains a public-key credential descriptor");
+    return id;
 }
 
 static void test_makecredential_assertion(fixture *f) {
@@ -556,15 +616,16 @@ static void test_makecredential_assertion(fixture *f) {
           "mc packed fmt");
     const omk_cbor_val *sig =
         att != NULL ? omk_cbor_map_get_text(&doc, att, "sig", 3) : NULL;
-    check(sig != NULL && sig->type == OMK_CBOR_BYTES && sig->len == 64,
-          "mc attestation sig");
-    if (sig != NULL) {
+    uint8_t raw_sig[64];
+    const bool att_der = decode_es256_signature(sig, raw_sig);
+    check(att_der, "mc attestation signature is canonical DER");
+    if (att_der) {
         uint8_t input[768];
         memcpy(input, mc.auth_data, mc.auth_len);
         memcpy(input + mc.auth_len, cdh, 32);
         uint8_t hash[32];
         omk_sha256(input, mc.auth_len + 32, hash);
-        check(omk_p256_ecdsa_verify(mc.pub, hash, sig->data),
+        check(omk_p256_ecdsa_verify(mc.pub, hash, raw_sig),
               "mc attestation verifies");
     }
 
@@ -593,17 +654,78 @@ static void test_makecredential_assertion(fixture *f) {
     const omk_cbor_val *gsig = omk_cbor_map_get_int(&gdoc, groot, 3);
     check(ad != NULL && ad->type == OMK_CBOR_BYTES && ad->len == 37,
           "assertion authData length");
-    check(gsig != NULL && gsig->type == OMK_CBOR_BYTES && gsig->len == 64,
-          "assertion sig");
-    if (ad != NULL && gsig != NULL) {
+    const bool ga_der = decode_es256_signature(gsig, raw_sig);
+    check(ga_der, "assertion signature is canonical DER");
+    if (ad != NULL && ga_der) {
         uint8_t input[128];
         memcpy(input, ad->data, ad->len);
         memcpy(input + ad->len, cdh, 32);
         uint8_t hash[32];
         omk_sha256(input, ad->len + 32, hash);
-        check(omk_p256_ecdsa_verify(mc.pub, hash, gsig->data),
+        check(omk_p256_ecdsa_verify(mc.pub, hash, raw_sig),
               "assertion verifies");
         check((ad->data[32] & 0x01) != 0, "assertion UP flag");
+    }
+}
+
+static void test_assertion_key_validation(void) {
+    fixture f;
+    fixture_init(&f);
+    static const char rp[] = "scalar.test";
+    uint8_t rp_hash[32], cdh[32] = {0};
+    omk_sha256(rp, sizeof rp - 1, rp_hash);
+    /* Public P-256 order, used only to exercise scalar boundaries. */
+    static const uint8_t order[32] = {
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84,
+        0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51,
+    };
+    for (unsigned i = 0; i < 7; i++) {
+        uint8_t seed[32] = {0};
+        uint8_t alg = OMK_ALG_ES256;
+        if (i == 1 || i == 4) {
+            memcpy(seed, order, sizeof seed);
+            if (i == 4) {
+                seed[31]--; /* n - 1 */
+            }
+        } else if (i == 2) {
+            memset(seed, 0xff, sizeof seed);
+        } else if (i == 3) {
+            seed[31] = 1;
+        } else if (i == 5) {
+            alg = OMK_ALG_EDDSA; /* every 32-byte Ed25519 seed is valid */
+        } else if (i == 6) {
+            alg = 0xff;
+        }
+        const bool valid = i >= 3 && i <= 5;
+        uint8_t id[OMK_CRED_ID_MAX];
+        const size_t id_len = omk_store_seal_credential(
+            &f.ct.store, rp_hash, seed, alg, 1, false, id);
+        check(id_len != 0, "scalar: seal boundary credential");
+        uint8_t body[256], resp[512];
+        omk_cbor_enc e;
+        omk_cbor_enc_init(&e, body, sizeof body);
+        omk_cbor_put_map(&e, 3);
+        omk_cbor_put_uint(&e, 1);
+        omk_cbor_put_text(&e, rp, sizeof rp - 1);
+        omk_cbor_put_uint(&e, 2);
+        omk_cbor_put_bytes(&e, cdh, sizeof cdh);
+        omk_cbor_put_uint(&e, 3);
+        omk_cbor_put_array(&e, 1);
+        put_test_descriptor(&e, id, id_len);
+        check(!e.overflow, "scalar: request fits");
+        const uint32_t before = f.ct.store.counter;
+        size_t len = 0;
+        const uint8_t status =
+            send_cmd(&f, 0x02, body, e.len, resp, sizeof resp, &len);
+        check(status == (valid ? OMK_CTAP2_OK
+                               : OMK_CTAP2_ERR_INVALID_CREDENTIAL),
+              "scalar: assertion accepts only valid algorithm/key pairs");
+        if (!valid) {
+            check(f.ct.store.counter == before && len == 0,
+                  "scalar: rejected credential consumes no counter or body");
+        }
     }
 }
 
@@ -833,6 +955,7 @@ static void test_persistence(fixture *f);
 static void test_pin_protocol1(fixture *f);
 static void test_pin_oversize(fixture *f);
 static void test_hmac_oversize(fixture *f);
+static void test_key_agreement_invalid_point(fixture *f);
 static void test_getassertion_pin_upfalse(fixture *f);
 static void test_pin_lockout(fixture *f);
 static void test_pin_retry_exhaustion(fixture *f);
@@ -876,6 +999,7 @@ int main(void) {
     test_persistence(&f);
     test_pin_oversize(&f);
     test_hmac_oversize(&f);
+    test_key_agreement_invalid_point(&f);
     test_getassertion_pin_upfalse(&f);
     test_pin_lockout(&f);
     test_pin_retry_exhaustion(&f);
@@ -903,6 +1027,7 @@ int main(void) {
     test_pin_token_rng_failure();
     test_reset_long_op_cancel();
     test_reset_invalidates_state();
+    test_assertion_key_validation();
     if (g_failures != 0) {
         printf("%d ctap test(s) failed\n", g_failures);
         return 1;
@@ -1383,9 +1508,13 @@ static void test_pin(fixture *f) {
     omk_cbor_decode(&cdoc, resp, len);
     const omk_cbor_val *croot = omk_cbor_root(&cdoc);
     const omk_cbor_val *enumerated_id =
-        omk_cbor_map_get_int(&cdoc, croot, 7);
+        cm_response_id(&cdoc, croot);
     check(enumerated_id != NULL && enumerated_id->type == OMK_CBOR_BYTES,
           "enumerated credential id");
+
+    if (enumerated_id == NULL) {
+        return;
+    }
 
     /* Delete it. */
     uint8_t dparams[128];
@@ -1393,7 +1522,7 @@ static void test_pin(fixture *f) {
     omk_cbor_enc_init(&de, dparams, sizeof dparams);
     omk_cbor_put_map(&de, 1);
     omk_cbor_put_uint(&de, 2);
-    omk_cbor_put_bytes(&de, enumerated_id->data, enumerated_id->len);
+    put_test_descriptor(&de, enumerated_id->data, enumerated_id->len);
     auth_in[0] = 0x06;
     memcpy(auth_in + 1, dparams, de.len);
     omk_hmac_sha256(cm_token, 32, auth_in, 1 + de.len, cm_auth);
@@ -1703,6 +1832,65 @@ static size_t build_hmac_ga(uint8_t *out, size_t cap, const char *rp,
     omk_cbor_put_uint(&e, 4);
     omk_cbor_put_uint(&e, protocol);
     return e.overflow ? 0 : e.len;
+}
+
+static void test_key_agreement_invalid_point(fixture *f) {
+    for (uint32_t protocol = 1; protocol <= 2; protocol++) {
+        fixture_init(f);
+        pin_client pc;
+        pin_client_init(f, &pc, protocol, f->ct.pin.key_pub);
+        uint8_t valid_pub[65];
+        memcpy(valid_pub, pc.plat.pub, sizeof valid_pub);
+        /* Correct COSE shape, but (0, 0) is not on P-256. */
+        memset(pc.plat.pub + 1, 0, 64);
+
+        uint8_t pinpad[64] = {0};
+        memcpy(pinpad, "1234", 4);
+        const uint8_t retries = f->ct.store.pin_retries;
+        check(clientpin_set(f, &pc, protocol, pinpad, sizeof pinpad) ==
+                  OMK_CTAP1_ERR_INVALID_PARAMETER,
+              "invalid point: setPIN rejects off-curve peer");
+        check(!f->ct.store.pin_set && f->ct.store.pin_retries == retries,
+              "invalid point: PIN state unchanged");
+
+        uint8_t cdh[32] = {0};
+        uint8_t uid[4] = {1, 2, 3, 4};
+        uint8_t salt[32] = {0};
+        uint8_t salt_enc[64], salt_auth[32], body[1024], resp[1024];
+        size_t enc_len = 0, auth_len = 0, resp_len = 0;
+        pin_encrypt_c(&pc, protocol, salt, sizeof salt, salt_enc, &enc_len);
+        pin_auth_c(&pc, protocol, salt_enc, enc_len, salt_auth, &auth_len);
+        const uint32_t counter = f->ct.store.counter;
+        size_t body_len = build_hmac_mc(
+            body, sizeof body, cdh, "invalid-point.test", uid, sizeof uid,
+            pc.plat.pub, protocol, salt_enc, enc_len, salt_auth, auth_len);
+        check(body_len != 0, "invalid point: MC request built");
+        check(send_cmd(f, 0x01, body, body_len, resp, sizeof resp,
+                       &resp_len) == OMK_CTAP1_ERR_INVALID_PARAMETER,
+              "invalid point: hmac-secret-mc rejects off-curve peer");
+        check(f->ct.store.counter == counter,
+              "invalid point: MC does not consume counter");
+
+        body_len = build_hmac_ga(
+            body, sizeof body, "invalid-point.test", cdh, pc.plat.pub,
+            protocol, salt_enc, enc_len, salt_auth, auth_len);
+        check(body_len != 0, "invalid point: GA request built");
+        check(send_cmd(f, 0x02, body, body_len, resp, sizeof resp,
+                       &resp_len) == OMK_CTAP1_ERR_INVALID_PARAMETER,
+              "invalid point: hmac-secret rejects off-curve peer");
+
+        memcpy(pc.plat.pub, valid_pub, sizeof valid_pub);
+        body_len = build_hmac_mc(
+            body, sizeof body, cdh, "invalid-point.test", uid, sizeof uid,
+            pc.plat.pub, protocol, salt_enc, enc_len, salt_auth, auth_len);
+        check(body_len != 0, "valid point: MC request built");
+        check(send_cmd(f, 0x01, body, body_len, resp, sizeof resp,
+                       &resp_len) == OMK_CTAP2_OK,
+              "valid point: hmac-secret-mc recovers after rejection");
+        check(clientpin_set(f, &pc, protocol, pinpad, sizeof pinpad) ==
+                  OMK_CTAP2_OK,
+              "valid point: setPIN recovers after rejection");
+    }
 }
 
 static void test_pin_oversize(fixture *f) {
@@ -2298,8 +2486,6 @@ static void test_puat_sliding_expiry(fixture *f) {
     check(f->ct.pin.used_once && f->ct.pin.used_ms == f->env.now,
           "puat-idle: first use records activity");
     f->env.now = f->ct.pin.used_ms + OMK_CTAP_PUAT_INITIAL_MS + 1;
-    check(!omk_ctap_puat_valid(&f->ct, OMK_PERM_MC, rp_hash, NULL),
-          "puat-idle: read-only check rejects idle token");
     check(authorize_test_token(f, token, cdh, rp_hash) ==
               OMK_CTAP2_ERR_PIN_AUTH_INVALID,
           "puat-idle: authenticating check rejects idle token");
@@ -2316,18 +2502,14 @@ static void test_puat_sliding_expiry(fixture *f) {
           "puat-idle: use at idle boundary succeeds");
     check(f->ct.pin.used_ms == f->env.now,
           "puat-idle: second use refreshes activity timestamp");
-    check(omk_ctap_puat_valid(&f->ct, OMK_PERM_MC, rp_hash, NULL),
-          "puat-idle: refreshed token passes read-only check");
     f->env.now = f->ct.pin.used_ms + OMK_CTAP_PUAT_INITIAL_MS + 1;
-    check(!omk_ctap_puat_valid(&f->ct, OMK_PERM_MC, rp_hash, NULL),
-          "puat-idle: refreshed window also expires");
     check(authorize_test_token(f, token, cdh, rp_hash) ==
               OMK_CTAP2_ERR_PIN_AUTH_INVALID,
           "puat-idle: refreshed window expires on use");
 
     /* Keep using the token every 30 seconds: activity must not extend the
-     * absolute ten-minute lifetime.  At the exact boundary both paths still
-     * accept it; one millisecond later only the total timer can reject it. */
+     * absolute ten-minute lifetime. At the exact boundary authorization still
+     * succeeds; one millisecond later only the total timer can reject it. */
     check(pin_token_cmd(f, &pc, 2, "1234", 0x09, true, OMK_PERM_MC, rp,
                         token) == 0,
           "puat-total: token issued");
@@ -2341,11 +2523,7 @@ static void test_puat_sliding_expiry(fixture *f) {
     }
     check(f->ct.pin.used_ms == created + OMK_CTAP_PUAT_TOTAL_MS,
           "puat-total: last use refreshed idle window at total boundary");
-    check(omk_ctap_puat_valid(&f->ct, OMK_PERM_MC, rp_hash, NULL),
-          "puat-total: exact total boundary remains valid");
     f->env.now = created + OMK_CTAP_PUAT_TOTAL_MS + 1;
-    check(!omk_ctap_puat_valid(&f->ct, OMK_PERM_MC, rp_hash, NULL),
-          "puat-total: read-only check enforces unrefreshed total limit");
     check(authorize_test_token(f, token, cdh, rp_hash) ==
               OMK_CTAP2_ERR_PIN_AUTH_INVALID,
           "puat-total: use enforces unrefreshed total limit");
@@ -2420,7 +2598,7 @@ static void test_cm_rp_bound_enumeration(fixture *f) {
     check(omk_cbor_decode(&doc, resp, resp_len) && !doc.bad,
           "cm-bound: enumeration response is valid CBOR");
     const omk_cbor_val *root = omk_cbor_root(&doc);
-    const omk_cbor_val *got_id = omk_cbor_map_get_int(&doc, root, 7);
+    const omk_cbor_val *got_id = cm_response_id(&doc, root);
     check(got_id != NULL && got_id->type == OMK_CBOR_BYTES &&
               f->ct.store.cred_count == 1 &&
               got_id->len == f->ct.store.creds[0].id_len &&
@@ -2799,7 +2977,7 @@ static void test_puat_failure_statuses(fixture *f) {
     omk_cbor_enc_init(&pe, params, sizeof params);
     omk_cbor_put_map(&pe, 1);
     omk_cbor_put_uint(&pe, 2);
-    omk_cbor_put_bytes(&pe, mc_b.cred_id, mc_b.cred_id_len);
+    put_test_descriptor(&pe, mc_b.cred_id, mc_b.cred_id_len);
     uint8_t cm_input[160];
     cm_input[0] = 0x06;
     memcpy(cm_input + 1, params, pe.len);
@@ -3215,17 +3393,28 @@ static void test_cm_enumeration_after_delete(fixture *f) {
     omk_cbor_doc doc;
     omk_cbor_decode(&doc, resp, len);
     const omk_cbor_val *root = omk_cbor_root(&doc);
-    const omk_cbor_val *id = omk_cbor_map_get_int(&doc, root, 7);
+    const omk_cbor_val *id = cm_response_id(&doc, root);
     check(id != NULL && id->len == creds[2].cred_id_len &&
               memcmp(id->data, creds[2].cred_id, id->len) == 0,
           "enum-delete: newest credential returned first");
+    const omk_cbor_val *total = omk_cbor_map_get_int(&doc, root, 9);
+    check(total != NULL && total->type == OMK_CBOR_UINT && total->num == 3,
+          "enum-delete: begin includes totalCredentials");
+    const omk_cbor_val *pubkey = omk_cbor_map_get_int(&doc, root, 8);
+    const omk_cbor_val *x = omk_cbor_map_get_int(&doc, pubkey, -2);
+    const omk_cbor_val *y = omk_cbor_map_get_int(&doc, pubkey, -3);
+    check(x != NULL && x->type == OMK_CBOR_BYTES && x->len == 32 &&
+              y != NULL && y->type == OMK_CBOR_BYTES && y->len == 32 &&
+              memcmp(x->data, creds[2].pub + 1, 32) == 0 &&
+              memcmp(y->data, creds[2].pub + 33, 32) == 0,
+          "enum-delete: begin includes the selected credential public key");
 
     /* Delete the middle (next-in-order) credential.  The old implementation
      * then reused its shifted array index and returned the newest one again. */
     omk_cbor_enc_init(&pe, params, sizeof params);
     omk_cbor_put_map(&pe, 1);
     omk_cbor_put_uint(&pe, 2);
-    omk_cbor_put_bytes(&pe, creds[1].cred_id, creds[1].cred_id_len);
+    put_test_descriptor(&pe, creds[1].cred_id, creds[1].cred_id_len);
     auth_input[0] = 0x06;
     memcpy(auth_input + 1, params, pe.len);
     omk_hmac_sha256(token, sizeof token, auth_input, 1 + pe.len, auth);
@@ -3250,10 +3439,20 @@ static void test_cm_enumeration_after_delete(fixture *f) {
     check(status == 0, "enum-delete: continuation survives deletion");
     omk_cbor_decode(&doc, resp, len);
     root = omk_cbor_root(&doc);
-    id = omk_cbor_map_get_int(&doc, root, 7);
+    id = cm_response_id(&doc, root);
     check(id != NULL && id->len == creds[0].cred_id_len &&
               memcmp(id->data, creds[0].cred_id, id->len) == 0,
           "enum-delete: continuation skips deleted entry without duplicates");
+    check(omk_cbor_map_get_int(&doc, root, 9) == NULL,
+          "enum-delete: continuation omits totalCredentials");
+    pubkey = omk_cbor_map_get_int(&doc, root, 8);
+    x = omk_cbor_map_get_int(&doc, pubkey, -2);
+    y = omk_cbor_map_get_int(&doc, pubkey, -3);
+    check(x != NULL && x->type == OMK_CBOR_BYTES && x->len == 32 &&
+              y != NULL && y->type == OMK_CBOR_BYTES && y->len == 32 &&
+              memcmp(x->data, creds[0].pub + 1, 32) == 0 &&
+              memcmp(y->data, creds[0].pub + 33, 32) == 0,
+          "enum-delete: continuation includes its own credential public key");
 }
 
 static void test_cm_rp_enumeration_after_delete(fixture *f) {
@@ -3314,7 +3513,7 @@ static void test_cm_rp_enumeration_after_delete(fixture *f) {
     omk_cbor_enc_init(&pe, params, sizeof params);
     omk_cbor_put_map(&pe, 1);
     omk_cbor_put_uint(&pe, 2);
-    omk_cbor_put_bytes(&pe, creds[1].cred_id, creds[1].cred_id_len);
+    put_test_descriptor(&pe, creds[1].cred_id, creds[1].cred_id_len);
     del_auth_input[0] = 0x06;
     memcpy(del_auth_input + 1, params, pe.len);
     omk_hmac_sha256(token, sizeof token, del_auth_input, 1 + pe.len, del_auth);
@@ -3385,7 +3584,7 @@ static void test_update_user_immutable(fixture *f) {
     omk_cbor_enc_init(&pe, params, sizeof params);
     omk_cbor_put_map(&pe, 2);
     omk_cbor_put_uint(&pe, 2);
-    omk_cbor_put_bytes(&pe, mc.cred_id, mc.cred_id_len);
+    put_test_descriptor(&pe, mc.cred_id, mc.cred_id_len);
     omk_cbor_put_uint(&pe, 3);
     omk_cbor_put_map(&pe, 2);
     omk_cbor_put_text(&pe, "id", 2);
@@ -3426,7 +3625,7 @@ static void test_update_user_immutable(fixture *f) {
     pe.len = 0;
     omk_cbor_put_map(&pe, 2);
     omk_cbor_put_uint(&pe, 2);
-    omk_cbor_put_bytes(&pe, mc.cred_id, mc.cred_id_len);
+    put_test_descriptor(&pe, mc.cred_id, mc.cred_id_len);
     omk_cbor_put_uint(&pe, 3);
     omk_cbor_put_map(&pe, 2);
     omk_cbor_put_text(&pe, "id", 2);
@@ -3657,7 +3856,9 @@ static void test_init_rng_failure(void) {
     f.env.random_calls = 0;
     check(omk_ctap_init(&f.ct, &f.port, &f.hid) == -1,
           "init fails when PIN keypair RNG fails");
-    check(!f.ct.pin_initialized, "failed init leaves no PIN keypair");
+    check(all_zero_bytes(f.ct.pin.key_priv, sizeof f.ct.pin.key_priv) &&
+              all_zero_bytes(f.ct.pin.key_pub, sizeof f.ct.pin.key_pub),
+          "failed init leaves no PIN keypair");
 
     memset(g_flash, 0xFF, sizeof g_flash);
     f.env.random_fail_at = 0;
@@ -3830,7 +4031,6 @@ static void test_reset_invalidates_state(void) {
     f.ct.pin.used_once = true;
     f.ct.pin.created_ms = f.ct.boot_ms;
     f.ct.pin.used_ms = f.ct.boot_ms;
-    f.ct.pin.shared_ready = true;
     f.ct.pin.protocol = 2;
     memset(f.ct.pin.shared_aes, 0x22, sizeof f.ct.pin.shared_aes);
     memset(f.ct.pin.shared_hmac, 0x33, sizeof f.ct.pin.shared_hmac);
@@ -3842,7 +4042,6 @@ static void test_reset_invalidates_state(void) {
     f.ct.ga.hmac_salt_len = 32;
     memset(f.ct.ga.hmac_salt, 0x44, sizeof f.ct.ga.hmac_salt);
     memset(f.ct.ga.hmac_aes, 0x55, sizeof f.ct.ga.hmac_aes);
-    memset(f.ct.ga.hmac_hmac, 0x66, sizeof f.ct.ga.hmac_hmac);
     memset(f.ct.ga.rp_hash, 0x77, sizeof f.ct.ga.rp_hash);
 
     f.ct.cm.valid = true;
@@ -3866,7 +4065,7 @@ static void test_reset_invalidates_state(void) {
               f.ct.pin.permissions == 0 && !f.ct.pin.rp_bound &&
               !f.ct.pin.user_verified && !f.ct.pin.used_once,
           "Reset clears PUAT bytes and flags");
-    check(!f.ct.pin.shared_ready && f.ct.pin.protocol == 0 &&
+    check(f.ct.pin.protocol == 0 &&
               all_zero_bytes(f.ct.pin.shared_aes,
                              sizeof f.ct.pin.shared_aes) &&
               all_zero_bytes(f.ct.pin.shared_hmac,
@@ -3875,8 +4074,7 @@ static void test_reset_invalidates_state(void) {
     check(!f.ct.ga.valid && !f.ct.ga.hmac_secret && f.ct.ga.count == 0 &&
               all_zero_bytes(f.ct.ga.hmac_salt,
                              sizeof f.ct.ga.hmac_salt) &&
-              all_zero_bytes(f.ct.ga.hmac_aes, sizeof f.ct.ga.hmac_aes) &&
-              all_zero_bytes(f.ct.ga.hmac_hmac, sizeof f.ct.ga.hmac_hmac),
+              all_zero_bytes(f.ct.ga.hmac_aes, sizeof f.ct.ga.hmac_aes),
           "Reset clears GA continuation and extension keys");
     check(!f.ct.cm.valid && f.ct.cm.count == 0 &&
               all_zero_bytes(f.ct.cm.rp_hash, sizeof f.ct.cm.rp_hash),

@@ -109,7 +109,6 @@ typedef struct {
     uint8_t shared_aes[32];
     uint8_t shared_hmac[32];
     uint8_t protocol;
-    bool shared_ready;
 
     uint8_t token[32];
     bool token_valid;
@@ -133,7 +132,6 @@ typedef struct {
     uint8_t hmac_salt[64];
     size_t hmac_salt_len;
     uint8_t hmac_aes[32];
-    uint8_t hmac_hmac[32];
     uint8_t hmac_protocol;
     uint8_t indices[OMK_MAX_CREDENTIALS];
     uint8_t count;
@@ -160,7 +158,6 @@ typedef struct {
     omk_ctaphid *hid;
     omk_store store;
     omk_pin_state pin;
-    bool pin_initialized;
     uint8_t consecutive_pin_failures;
     /* Set when a PIN retry-counter write failed; PIN verification then fails
      * closed until the next boot. */

@@ -1,0 +1,136 @@
+{
+  "legalHeader": "https://fidoalliance.org/metadata/metadata-statement-legal-header/",
+  "description": "OhMyKei Development FIDO2 Authenticator",
+  "aaguid": "68d840c1-b0aa-5d75-bbbb-c4f3f6c789b3",
+  "protocolFamily": "fido2",
+  "schema": 3,
+  "authenticatorVersion": 1,
+  "upv": [
+    {
+      "major": 1,
+      "minor": 0
+    },
+    {
+      "major": 2,
+      "minor": 0
+    },
+    {
+      "major": 2,
+      "minor": 1
+    }
+  ],
+  "authenticationAlgorithms": [
+    "secp256r1_ecdsa_sha256_raw",
+    "ed25519_eddsa_sha512_raw"
+  ],
+  "publicKeyAlgAndEncodings": [
+    "cose"
+  ],
+  "attestationTypes": [
+    "basic_surrogate"
+  ],
+  "userVerificationDetails": [
+    [
+      {
+        "userVerificationMethod": "none"
+      }
+    ],
+    [
+      {
+        "userVerificationMethod": "presence_internal"
+      }
+    ],
+    [
+      {
+        "userVerificationMethod": "passcode_external",
+        "caDesc": {
+          "base": 10,
+          "minLength": 4
+        }
+      }
+    ],
+    [
+      {
+        "userVerificationMethod": "passcode_external",
+        "caDesc": {
+          "base": 10,
+          "minLength": 4
+        }
+      },
+      {
+        "userVerificationMethod": "presence_internal"
+      }
+    ]
+  ],
+  "keyProtection": [
+    "hardware"
+  ],
+  "matcherProtection": [
+    "on_chip"
+  ],
+  "cryptoStrength": 128,
+  "attachmentHint": [
+    "external",
+    "wired"
+  ],
+  "tcDisplay": [],
+  "attestationRootCertificates": [],
+  "supportedExtensions": [
+    {
+      "id": "hmac-secret",
+      "fail_if_unknown": false
+    },
+    {
+      "id": "credProtect",
+      "fail_if_unknown": false
+    },
+    {
+      "id": "hmac-secret-mc",
+      "fail_if_unknown": false
+    }
+  ],
+  "authenticatorGetInfo": {
+    "versions": [
+      "FIDO_2_0",
+      "FIDO_2_1",
+      "FIDO_2_3"
+    ],
+    "extensions": [
+      "credProtect",
+      "hmac-secret",
+      "hmac-secret-mc"
+    ],
+    "aaguid": "68d840c1b0aa5d75bbbbc4f3f6c789b3",
+    "options": {
+      "rk": true,
+      "up": true,
+      "plat": false,
+      "credMgmt": true,
+      "clientPin": false,
+      "pinUvAuthToken": true,
+      "makeCredUvNotRqd": true
+    },
+    "maxMsgSize": 2048,
+    "pinUvAuthProtocols": [
+      2,
+      1
+    ],
+    "maxCredentialCountInList": 32,
+    "maxCredentialIdLength": 96,
+    "transports": [
+      "usb"
+    ],
+    "algorithms": [
+      {
+        "type": "public-key",
+        "alg": -7
+      },
+      {
+        "type": "public-key",
+        "alg": -8
+      }
+    ],
+    "firmwareVersion": 1,
+    "remainingDiscoverableCredentials": 64
+  }
+}

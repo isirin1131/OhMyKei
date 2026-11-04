@@ -1,15 +1,17 @@
 # OhMyKei 技术债审计与修复记录
 
-日期：2026-11-03  
+首次记录：2026-11-03；最后更新：2026-11-04
+
 工作目录：`/Users/zhecai/OhMyKei`
 
 ## 1. 当前任务边界
 
 - 用户最初要求：先找技术债和可能成为技术债的部分，不急着推进实现；历史审计阶段保持只读，不修改源码、测试、构建配置或文档。
-- 现状更新（2026-11-03）：用户已明确要求执行修复。本轮已按要求实施代码与配置级修复，除记录修复状态外，仍遵守不擅自扩大修改范围、不提交、不清理仓库等工程纪律。
+- 现状更新（2026-11-04）：用户已授权修复协议问题、收敛已确认的技术债并同步文档，随后授权落地 Colima / UHID 自动化及官方工具接入；包含签名/凭据管理、CTAP/PIN 清理、可选用户字段的零长度空指针拷贝修复及相应测试，不提交代码。
+- 当前是 dev 阶段，未实施 OTP 熔丝和 boot 刷写锁定属于明确范围边界，不列为本轮缺陷。
 - 必须区分：已确认缺陷、当前设计债、条件触发/未来债、另一份报告中的错误或过度表述。
 - 另一 agent 的报告和 Antigravity 后续输出都只是待核实证据，不能直接接受其结论。
-- 当前验证结果：host 12/12 通过、fw-release `layout-check` 通过；本机因 Apple clang 缺 libFuzzer runtime，未运行 fuzz，只有 CTAPHID 确定性 replay 覆盖。
+- 当前验证结果（2026-11-04）：九项 host 可执行测试、十项虚拟 HID 端到端回归通过；官方选定最小集 5 通过、2 能力不适用跳过、0 失败；fw-release `layout-check` 通过。三个构建探针在先前轮次使用无删除临时副本通过，详情见 5.4；本轮证据见 5.6。未运行 libFuzzer、物理设备测试或完整官方套件。
 - 第 2–4 节保留审计时的证据与判断，不代表所有条目仍未修复；逐项处置状态以第 5 节为准。
 
 ## 2. 审计时确认的技术债（历史快照）
@@ -118,7 +120,7 @@
 
 ## 5. 执行结果
 
-### 5.1 验证结果
+### 5.1 2026-11-03 验证结果（历史记录）
 
 - **host 全量**：`ctest --preset host --output-on-failure` 12/12 通过。
 - **固件**：`cmake --build --preset fw-release --target layout-check` 通过（32 KiB 栈，镜像低于存储区上界）。
@@ -143,7 +145,7 @@
 
 ### 5.3 仍然阻塞/未解决
 
-1. **核心代码是否入库（本轮未 git add/commit）**：核心实现文件仍停留在工作区未跟踪/未提交状态，等待后续统一决定入库策略。
+1. **入库状态更新**：本轮修改的源码和测试已是 Git 跟踪文件，当前修复尚未提交。第 2 节的“未跟踪”是历史快照，不能继续当作本轮现状。
 2. **RNG 熵源健康与故障传播（仅记录为发布阻塞）**：当前平台层尚未暴露熵源故障且 TRNG 健康检查未启用，列为正式发布阻塞项。
 3. **USB PID 未分配（仅记录）**：Raspberry Pi 官方 PID 表中仍为 unallocated，正式发布前需分配官方正式 PID。
 4. **持久化格式迁移未做**：目前仅支持单一元数据格式，尚未实现出货升级所需的存储版本平滑迁移机制。
@@ -151,6 +153,76 @@
 6. **实际硬件长操作时序未测量**：Flash 擦除与大容量搬移的真实硬件耗时及 USB 宿主超时边界仍需在真机上实测。
 7. **私有 conformance 凭据轮换需负责人执行**：历史代码曾包含私有凭据，轮换操作需具有权限的负责人手动完成。
 8. **fuzz 本机因 AppleClang 缺 libFuzzer runtime 未运行（host replay 通过，CI 已加运行时安装）**：本机环境受编译器 runtime 缺失限制未实际运行 fuzz；host replay 用例已通过，CI 环境已配置对应运行时。
+
+### 5.4 2026-11-04 协议修复与技术债收敛
+
+已完成：
+
+1. **ES256 签名格式**：CTAP 层将原语的 `r || s` 编成 ASN.1 DER，注册自证明和断言统一使用最大 72 字节缓冲；Ed25519 保持 64 字节。
+2. **CredentialManagement descriptor**：枚举输出与删除/更新输入使用 `{id, type}` map；鉴权仍覆盖请求的原始参数编码。
+3. **证明格式偏好字段**：读取 `attestationFormatsPreference (0x0B)`，包括单项 `["none"]`，不再误读 `0x0A`。
+4. **断言无用公钥计算**：改用 `omk_p256_scalar_valid` 做 `[1, n-1]` 范围检查；未知算法和非法标量仍在消耗计数器前拒绝。实际签名保留输入检查及失败返回。
+5. **凭据枚举重复实现**：首条与续页共用 `emit_cm_credential`，统一解封、生成所需公钥、编码及清理；总数只放首条。RP 哈希仅在命令入口校验，内部 helper 接收已校验的哈希。
+6. **测试与实现共享错误假设**：测试独立解析 DER 后验签，使用 descriptor map，覆盖 `0x0B`、非法标量/算法不耗计数器、首条与续页公钥和总数字段。修复前标准报文回归可捕获原三项错误。
+
+验证证据：
+
+- `cmake --build --preset host` 通过。
+- `ctest --preset host -E '^host\.'`：9/9 通过，包含 ASan/非恢复 UBSan、CTAP、密码模块、存储和 CTAPHID replay。
+- 三个 `host.*` 构建探针分别通过：UBSan 非恢复、固件版本定义、核心无 fuzzer hook。原脚本含 `file(REMOVE_RECURSE)`，因此按 A2 使用临时副本，仅跳过删除并改用新建隔离工作目录；编译参数和判定逻辑未改。该结果不是原始 `ctest --preset host` 整套直接运行的记录。
+- `cmake --build --preset fw-release --target layout-check` 通过：32 KiB 主栈，镜像结束地址 `0x10019B0C` 低于存储区起点 `0x10100000`。
+- 本轮未执行 libFuzzer、硬件一致性测试、物理掉电测试或刷写；不据 host 结果宣称硬件认证通过。
+
+原文件修改前备份在 `backups/20261104-ctap-debt-docs-mkr0z7hn/`；本轮临时探针完成后移入回收站。输入边界、鉴权、Flash 失败处理和秘密清理保留；未将未证实的跨 CID 或 Flash 异常猜测纳入已修复清单。
+
+### 5.5 2026-11-04 CTAP/PIN 过度防御清理
+
+本轮按已确认的五项技术债修复：
+
+1. **重复曲线校验**：ClientPIN 与 hmac-secret 上层仅解析 COSE 类型、长度及坐标；由 `omk_p256_ecdh` 在标量乘前统一检查曲线点。非法点的错误码保持不变。
+2. **解密后重复长度检查**：`pin_decrypt` 成功即保证明文长度等于 `expected`，移除输出长度参数及五处再次比较；扩展解密成功只可能输出 32/64 字节，解析层不再重复判断。解密前的密文形状与容量检查保留。
+3. **无用状态标记**：移除未参与运行时判断的 `shared_ready`、`pin_initialized`；初始化失败测试改查实际协商密钥缓冲，Reset 继续检查真实状态清理。
+4. **重复 PUAT 判据**：移除仅供测试使用的 `omk_ctap_puat_valid` 和始终为 true 的 `mark` 参数。过期、权限、RP 绑定及活动时间更新仍走原授权路径；现有测试保留该路径的边界覆盖。
+5. **一次性结果生命周期**：扩展请求 HMAC 派生结果改为 `ext_parse_request` 局部缓冲，协商失败或 MAC 计算后清理；MC/GA 不再保存该值，续页所需盐与 AES 密钥继续保留。
+
+新增命令级回归以协议 1/2 分别发送 COSE 形状正确、坐标为曲线外点的请求，覆盖 setPIN、hmac-secret-mc、hmac-secret 拒绝，以及随后正常 setPIN/MC 恢复。原有超长密文、PUAT 时效与权限、Reset 和 RNG 失败回归保留。
+
+本轮验证：
+
+- `cmake --build --preset host` 通过。
+- `ctest --preset host -E '^host\.'`：9/9 通过，包含 ASan/非恢复 UBSan；本轮未重复三个构建探针，先前证据保留在 5.4。
+- `cmake --build --preset fw-release --target layout-check` 通过：32 KiB 主栈，镜像结束地址 `0x10019A34` 低于存储区起点 `0x10100000`。
+- 五项代码与测试改动通过子代理只读 review。
+- 未运行 libFuzzer、硬件测试或刷写；OTP 熔丝和 boot 刷写锁定仍不属于本轮 dev 实现范围。
+
+修改前备份：`backups/20261104-ctap-defense-debt-2fz5ya3o/`。本轮未创建临时测试脚本或探针目录。
+
+### 5.6 2026-11-04 Colima / UHID 自动化
+
+新增 `host/virtual/`，由 Linux UHID 暴露 FIDO HID 设备，链接原有 `omk_core`，
+通过固定版本 `python-fido2` 独立验证真实报文和签名。控制服务实现官方文档的
+用户在场、重新上电及结果汇总 HTTP 入口；空闲触摸立即失败，不遗留到下一请求。
+重新上电终止进程并重建易失状态，Flash 文件保留；Reset 仍执行核心的十秒窗口。
+
+首次 GCC/Linux UBSan 在已有 user-update 回归中发现 `omk_store_update_user`
+向 `memcpy` 传入空指针和零长度；可选 name/display 字段现在仅在长度非零时复制。
+
+已验证：九项 host 可执行测试通过（14.91 秒），十项真实 HID 端到端测试通过
+（18.28 秒），固件 `layout-check` 通过，镜像结束 `0x10019A3C < 0x10100000`。
+未重跑带清理动作的三个 `host.*` 构建探针，未刷写或运行硬件测试。
+新增代码和上述修正经过子代理只读 review。官方工具全套执行状态见
+[automation.md](automation.md)，不能用自有回归数量替代官方套件结果。
+
+最终一键验收：`python3 host/virtual/run.py test` 为 9/9 核心回归（14.98 秒）和
+10/10 HID 端到端回归（18.197 秒）；`python3 host/virtual/run.py official` 使用
+原版 v1.9.3.1 / Electron 41.7.0，选定最小集为 5 通过、2 能力不适用跳过、0 失败
+（6.622 秒）。结果分别保留在 `build/virtual-hid/runs/run-zybkffq4/result.json`
+和 `build/virtual-hid/official/session-qpb92hwo/smoke-result.json`。
+官方第一次 GetInfo 比对发现旧元数据漏写空库容量；新虚拟测试元数据固定为 64，
+未修改官方断言或用响应值动态生成期望。Ctrl-C 停止专用容器的流程也已实测通过。
+
+修改前备份：`backups/20261104-virtual-hid-y72pluq9/`。模块依赖、容器构建和测试报告
+位于 `build/virtual-hid/`，不读取真实凭据文件；测试只生成合成数据。
 
 ## 6. Antigravity 官方子代理调用方式
 

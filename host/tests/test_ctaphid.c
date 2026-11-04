@@ -269,12 +269,13 @@ static uint32_t do_init(fixture *f, const uint8_t nonce[8]) {
           "INIT response CID is broadcast");
     check(cap.msgs[0].cmd == 0x86, "INIT response command");
     check(cap.msgs[0].len == 17, "INIT response length 17");
-    check(memcmp(cap.msgs[0].data + 4, nonce, 8) == 0, "INIT nonce echo");
+    check(memcmp(cap.msgs[0].data, nonce, 8) == 0, "INIT nonce echo");
     check(cap.msgs[0].data[12] == 2, "CTAPHID version 2");
     check(cap.msgs[0].data[16] == 0x0D, "capabilities WINK|CBOR|NMSG");
-    uint32_t new_cid = ((uint32_t)cap.msgs[0].data[0] << 24) |
-                       ((uint32_t)cap.msgs[0].data[1] << 16) |
-                       ((uint32_t)cap.msgs[0].data[2] << 8) | cap.msgs[0].data[3];
+    uint32_t new_cid = ((uint32_t)cap.msgs[0].data[8] << 24) |
+                       ((uint32_t)cap.msgs[0].data[9] << 16) |
+                       ((uint32_t)cap.msgs[0].data[10] << 8) |
+                       cap.msgs[0].data[11];
     check(new_cid != 0 && new_cid != OMK_CTAPHID_BROADCAST_CID, "new CID");
     f->env.packet_count = 0;
     return new_cid;
@@ -301,10 +302,10 @@ static void test_init(void) {
     capture_packets2(&f.env, &cap);
     check(cap.count == 1, "sync INIT response");
     if (cap.count == 1) {
-        uint32_t got = ((uint32_t)cap.msgs[0].data[0] << 24) |
-                       ((uint32_t)cap.msgs[0].data[1] << 16) |
-                       ((uint32_t)cap.msgs[0].data[2] << 8) |
-                       cap.msgs[0].data[3];
+        uint32_t got = ((uint32_t)cap.msgs[0].data[8] << 24) |
+                       ((uint32_t)cap.msgs[0].data[9] << 16) |
+                       ((uint32_t)cap.msgs[0].data[10] << 8) |
+                       cap.msgs[0].data[11];
         check(got == cid1, "sync INIT keeps CID");
     }
 }

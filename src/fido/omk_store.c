@@ -1520,9 +1520,13 @@ int omk_store_update_user(omk_store *s, const uint8_t *id, size_t id_len,
     c->user_id_len = (uint8_t)user_id_len;
     memcpy(c->user_id, user_id, user_id_len);
     c->user_name_len = (uint8_t)name_len;
-    memcpy(c->user_name, name, name_len);
+    if (name_len != 0) {
+        memcpy(c->user_name, name, name_len);
+    }
     c->display_name_len = (uint8_t)display_len;
-    memcpy(c->display_name, display, display_len);
+    if (display_len != 0) {
+        memcpy(c->display_name, display, display_len);
+    }
     s->next_seq = seq + 1u;
     return 0;
 }

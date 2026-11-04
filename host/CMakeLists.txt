@@ -31,6 +31,17 @@ if(OMK_SANITIZE)
     target_compile_options(omk_core PRIVATE ${OMK_SAN_FLAGS})
 endif()
 
+# Linux userspace HID device; links the same protocol core as the firmware.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(omk_virtual virtual/device.c)
+    target_link_libraries(omk_virtual PRIVATE omk_core)
+    target_compile_options(omk_virtual PRIVATE -std=c17 ${OMK_WARNINGS})
+    if(OMK_SANITIZE)
+        target_compile_options(omk_virtual PRIVATE ${OMK_SAN_FLAGS})
+        target_link_options(omk_virtual PRIVATE ${OMK_SAN_LINK_FLAGS})
+    endif()
+endif()
+
 function(omk_host_test name)
     add_executable(${name} tests/${name}.c)
     target_link_libraries(${name} PRIVATE omk_core)

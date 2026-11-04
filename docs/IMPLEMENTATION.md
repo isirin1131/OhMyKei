@@ -46,7 +46,7 @@ The current host configuration registers 12 CTest entries:
 | `test_p256` | key derivation, ECDH, RFC 6979 ECDSA, failure/retry paths |
 | `test_crypto_ed25519` | RFC 8032 vectors, signing, verification and negative cases |
 | `test_ctaphid` | INIT/channel lifecycle, busy/cancel/abort, reassembly, USB reset, TX faults |
-| `test_ctap` | end-to-end commands, PIN, hmac-secret/credProtect echo, credential/RP enumeration after deletion, cooperative Reset cancel, RNG failures |
+| `test_ctap` | end-to-end commands, independent ES256 DER parsing and verification, descriptor maps, `0x0B` format preference, scalar rejection before counter use, enumeration public keys/counts, PIN/extensions, Reset cancel and RNG failures |
 | `test_store` | NOR model, per-operation power cuts and same-boot dirty-slot retry, PIN journal, compaction/cancel, legacy images, RNG failures |
 | `test_fuzz_ctaphid_replay` | same inputs replayed in a different order produce identical output |
 | `host.ubsan_nonrecoverable` | compiles and runs a deliberate signed-overflow probe; it must abort |
@@ -54,8 +54,41 @@ The current host configuration registers 12 CTest entries:
 | `host.core_without_fuzzer_hooks` | every normal core archive member is free of SanitizerCoverage symbols |
 
 With `OMK_SANITIZE=OFF` the UBSan probe is not registered, leaving 11 tests.
-A clean ASan + non-recoverable-UBSan run in this tree passed 12/12; that is a
-point-in-time test result, not a proof of correctness or security.
+On 2026-11-04, the ASan + non-recoverable-UBSan host build passed all nine
+executable tests after the CTAP/PIN cleanup, including off-curve key-agreement
+requests for protocols 1 and 2. The three build probes passed earlier in the
+protocol-fix pass, using isolated temporary copies with `REMOVE_RECURSE`
+omitted; their compilation and checks were unchanged. They were not rerun for
+this cleanup. The Release firmware also passed `layout-check` after the cleanup.
+See [the audit record](audit-plan.md#55-2026-11-04-ctappin-过度防御清理)
+for commands and scope. These results are not a proof of correctness or security.
+
+### Virtual HID automation
+
+Linux host builds also produce `omk_virtual` from `host/virtual/device.c`.
+It links the same `omk_core`, creates a 64-byte FIDO UHID interface and exposes
+it through the kernel's hidraw path. The platform uses monotonic time,
+`getrandom`, and a file-backed NOR model (256-byte page multiples, 4 KiB erases,
+1-to-0 programming only, synchronized writes). The HTTP supervisor restarts
+the process to model power cycling while preserving the Flash file.
+
+`python3 host/virtual/run.py test` uses a dedicated Colima container and runs
+the nine executable host tests plus ten independent `python-fido2` HID tests.
+Both sets passed on 2026-11-04, with the HID suite taking 18.28 seconds.
+GCC's UBSan also exposed zero-length copies from null optional profile fields
+in `omk_store_update_user`; those copies now run only for nonempty fields.
+The existing user-update regression covers the failure.
+
+The local official v1.9.3.1 tool also ran under Linux Electron 41.7.0 with its
+test sources unchanged: the selected Generic/GetInfo and PIN 1/2 key-agreement
+smoke passed 5 tests, skipped 2 unsupported-feature cases, and failed none
+(6.622 seconds). The test metadata now includes the independent empty-store
+capacity expectation of 64. Official UP runs through its HTTP callback, with
+the simulator's automatic touch disabled.
+
+This does not emulate RP2350 instructions, TinyUSB, the hardware RNG or Flash
+timing. The full official corpus has not been run by this automation.
+Commands and current evidence: [automation.md](automation.md).
 
 ### Fuzz targets
 
@@ -67,8 +100,8 @@ clean. Configuration fails with an actionable message when the selected
 compiler has no libFuzzer runtime; stock Apple clang needs an LLVM
 compiler-rt/libFuzzer runtime. The CTAPHID replay regression is built and run
 with the normal host suite, so it works without libFuzzer. The fuzz preset has
-not been run in this checkout: only the normal 12-test host suite and the
-replay regression are verified. The command-layer harness now invokes the real
+not been run in this checkout: the host checks described above, including the
+replay regression, are the verification evidence. The command-layer harness now invokes the real
 `omk_ctap_handle`, but that broadens fuzz coverage only once a libFuzzer run is
 actually performed. CI installs the matching Ubuntu compiler-rt package; no CI
 result is claimed here.
@@ -361,6 +394,37 @@ random IV cannot be produced, sealing returns 0 and leaves the caller's output
 buffer untouched; MakeCredential then reports `CTAP2_ERR_OTHER` without storing
 a credential or consuming the counter.
 
+## Credential responses and implementation boundaries
+
+ES256 signatures in packed self-attestation and assertions are ASN.1 DER
+`Ecdsa-Sig-Value`; the crypto primitive still returns fixed-width `r || s`.
+The CTAP adapter removes redundant leading zeros, adds a sign-protecting zero
+when needed, and reserves 72 bytes. Ed25519 signatures remain 64 bytes.
+MakeCredential reads `attestationFormatsPreference` from key `0x0B`, including
+`["none"]`; key `0x0A` is not used as a format list.
+
+CredentialManagement emits and accepts `PublicKeyCredentialDescriptor` maps
+(`id` byte string and `type: "public-key"`). Delete/update authorization still
+covers the original encoded `subCommandParams`, not a reconstructed map.
+
+Assertions do not return a public key. Before consuming the signature counter,
+they validate the algorithm and check an ES256 scalar is in `[1, n-1]` via
+`omk_p256_scalar_valid`, without performing a public-key multiplication.
+Ed25519 accepts any 32-byte seed. The signing primitive still checks its inputs
+and propagates failure. This preserves rejection of invalid credentials while
+removing the unused public-key computation.
+
+Credential enumeration begin/next share `emit_cm_credential` for opening the
+credential, deriving its required public key, encoding the response and wiping
+scratch buffers. Only the first response includes `totalCredentials`. Cursor
+selection, expiry and deletion handling remain in the callers. The command
+entry point validates and authorizes the RP hash once, then passes the checked
+hash to the begin helper.
+
+Regression tests independently parse DER before cryptographic verification,
+check descriptor maps, exercise scalar boundaries and unknown algorithms, and
+compare enumeration public keys with the original registration public keys.
+
 ## PIN / UV
 
 PIN/UV Auth protocols 1 and 2 are both implemented, in the advertised order
@@ -376,12 +440,23 @@ at least 4 UTF-8 codepoints. The PIN/UV key-agreement key is a separate
 ECDH-ES+HKDF-256 COSE key (alg -25), not an ES256 credential key (-7).
 
 A single 32-byte `pinUvAuthToken` carries a permission mask, optional RP ID
-binding and a 30 s first-use / 10 min total lifetime.
+binding, a 30 s first-use/idle window and a 10 min absolute lifetime.
 `getPinUvAuthTokenUsingPinWithPermissions` accepts only `mc`, `ga` and `cm`.
 A successful UP consumes the token. The key-agreement key is rotated after a
 failed PIN comparison so a platform that learned or tried to brute-force the
 old shared secret cannot keep using it; if rotation cannot obtain randomness,
 the derived shared secrets are cleared and the command fails closed.
+
+Token validity is checked only on the authorization path; its tests exercise
+that same path rather than maintaining a second validity-query implementation.
+The unused `shared_ready` and `pin_initialized` flags have been removed;
+initialization failure and Reset tests check actual key/state cleanup.
+
+ClientPIN and extension parsers validate the COSE shape and coordinate lengths;
+the ECDH primitive validates the curve point before scalar multiplication.
+PIN decryption checks ciphertext shape and output capacity before writing,
+and success guarantees the requested plaintext length. Callers do not repeat
+that length check or receive a redundant output-length parameter.
 
 ### PIN candidate-attempt journal and boot resolution
 
@@ -447,6 +522,10 @@ a hardware TRNG model.
   the credential seed with a domain-separation string and a UV flag, so
   non-resident credentials work too. 32- and 64-byte salts are supported;
   protocol 1 and 2 key agreement is implemented independently of ClientPIN.
+  The request HMAC key is local to parsing and cleared after MAC computation
+  or agreement failure. Continuation state retains the salts and AES key needed
+  for subsequent assertions. Decryption accepts only 32/64-byte plaintexts;
+  request parsing relies on that result without repeating the length check.
 * `hmac-secret-mc`: the same computation during MakeCredential, returned in
   `authData.extensions`; it requires the `hmac-secret` boolean in the request.
 * `credProtect`: stored in the credential ID and resident record; levels 2/3
@@ -487,6 +566,10 @@ checks and real failure propagation; merely relabelling `pico_rand` as a
 CSPRNG is not a fix.
 
 ## Security / release limitations (current)
+
+The current phase is dev. OTP provisioning and boot/flash locking are outside
+this phase; the physical-protection notes below describe the boundary for
+future release work, not defects in the current protocol implementation.
 
 * The firmware RNG cannot detect or propagate entropy-source failure, as
   detailed above. This remains a security-release blocker.

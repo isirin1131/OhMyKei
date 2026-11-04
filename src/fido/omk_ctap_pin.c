@@ -21,7 +21,7 @@ void omk_ctap_puat_invalidate(omk_ctap *ct) {
 }
 
 static uint8_t puat_check(omk_ctap *ct, uint8_t permissions,
-                          const uint8_t *rp_hash, bool *uv_out, bool mark) {
+                          const uint8_t *rp_hash, bool *uv_out) {
     if (!ct->pin.token_valid) {
         return OMK_CTAP2_ERR_PIN_AUTH_INVALID;
     }
@@ -44,39 +44,12 @@ static uint8_t puat_check(omk_ctap *ct, uint8_t permissions,
             return OMK_CTAP2_ERR_PIN_AUTH_INVALID;
         }
     }
-    if (mark) {
-        ct->pin.used_once = true;
-        ct->pin.used_ms = now;
-    }
+    ct->pin.used_once = true;
+    ct->pin.used_ms = now;
     if (uv_out != NULL) {
         *uv_out = ct->pin.user_verified;
     }
     return OMK_CTAP2_OK;
-}
-
-bool omk_ctap_puat_valid(const omk_ctap *ct, uint8_t permissions,
-                         const uint8_t *rp_hash, bool *uv_out) {
-    if (!ct->pin.token_valid) {
-        return false;
-    }
-    const uint64_t now = omk_ctap_now_ms(ct);
-    const uint64_t activity_ms =
-        ct->pin.used_once ? ct->pin.used_ms : ct->pin.created_ms;
-    if (now - ct->pin.created_ms > OMK_CTAP_PUAT_TOTAL_MS ||
-        now - activity_ms > OMK_CTAP_PUAT_INITIAL_MS) {
-        return false;
-    }
-    if ((ct->pin.permissions & permissions) != permissions) {
-        return false;
-    }
-    if (ct->pin.rp_bound &&
-        (rp_hash == NULL || memcmp(ct->pin.rp_hash, rp_hash, 32) != 0)) {
-        return false;
-    }
-    if (uv_out != NULL) {
-        *uv_out = ct->pin.user_verified;
-    }
-    return true;
 }
 
 uint8_t omk_ctap_authorize_raw(omk_ctap *ct, const omk_cbor_val *param,
@@ -107,7 +80,7 @@ uint8_t omk_ctap_authorize_raw(omk_ctap *ct, const omk_cbor_val *param,
         return OMK_CTAP2_ERR_PIN_AUTH_INVALID;
     }
     bool uv = false;
-    const uint8_t status = puat_check(ct, permissions, rp_hash, &uv, true);
+    const uint8_t status = puat_check(ct, permissions, rp_hash, &uv);
     if (status != OMK_CTAP2_OK) {
         return status;
     }
@@ -282,7 +255,8 @@ static bool cose_to_pub(const omk_cbor_doc *doc, const omk_cbor_val *cose,
     pub[0] = 0x04;
     memcpy(pub + 1, x->data, 32);
     memcpy(pub + 33, y->data, 32);
-    return omk_p256_point_valid(pub);
+    /* ECDH validates the assembled point before scalar multiplication. */
+    return true;
 }
 
 static void zero32(uint8_t out[32]) {
@@ -315,7 +289,6 @@ static bool pin_derive_shared(omk_ctap *ct, const omk_cbor_doc *doc,
         omk_memzero(salt, sizeof salt);
     }
     ct->pin.protocol = (uint8_t)protocol;
-    ct->pin.shared_ready = true;
     omk_memzero(shared, sizeof shared);
     return true;
 }
@@ -323,8 +296,7 @@ static bool pin_derive_shared(omk_ctap *ct, const omk_cbor_doc *doc,
 /* Decrypt into a caller buffer only after proving that the ciphertext has
  * exactly the length the caller expects and that the plaintext fits. */
 static bool pin_decrypt(omk_ctap *ct, const uint8_t *in, size_t in_len,
-                        uint8_t *out, size_t out_cap, size_t expected,
-                        size_t *out_len) {
+                        uint8_t *out, size_t out_cap, size_t expected) {
     if (expected == 0 || expected % 16 != 0 || expected > out_cap) {
         return false;
     }
@@ -334,14 +306,12 @@ static bool pin_decrypt(omk_ctap *ct, const uint8_t *in, size_t in_len,
         }
         uint8_t iv[16] = {0};
         omk_aes256_cbc_decrypt(ct->pin.shared_aes, iv, in, in_len, out);
-        *out_len = in_len;
         return true;
     }
     if (in_len < 16 || in_len - 16 != expected) {
         return false;
     }
     omk_aes256_cbc_decrypt(ct->pin.shared_aes, in, in + 16, expected, out);
-    *out_len = expected;
     return true;
 }
 
@@ -486,7 +456,6 @@ static uint8_t sub_set_pin(omk_ctap *ct, const omk_cbor_doc *doc,
     const omk_cbor_val *enc = omk_cbor_map_get_int(doc, req, 0x05);
     uint8_t plain[64] = {0};
     uint8_t hash[16] = {0};
-    size_t plain_len = 0;
     uint8_t status;
 
     if (ka == NULL || auth == NULL || enc == NULL) {
@@ -505,13 +474,12 @@ static uint8_t sub_set_pin(omk_ctap *ct, const omk_cbor_doc *doc,
         return OMK_CTAP2_ERR_PIN_AUTH_INVALID;
     }
     if (!pin_decrypt(ct, enc->data, enc->len, plain, sizeof plain,
-                     sizeof plain, &plain_len) ||
-        plain_len != 64) {
+                     sizeof plain)) {
         status = OMK_CTAP1_ERR_INVALID_PARAMETER;
         goto done;
     }
     size_t pin_len = 0;
-    if (!pin_unpad(plain, plain_len, &pin_len)) {
+    if (!pin_unpad(plain, sizeof plain, &pin_len)) {
         status = OMK_CTAP1_ERR_INVALID_PARAMETER;
         goto done;
     }
@@ -542,8 +510,6 @@ static uint8_t sub_change_pin(omk_ctap *ct, const omk_cbor_doc *doc,
     uint8_t current[32] = {0};
     uint8_t plain[64] = {0};
     uint8_t hash[16] = {0};
-    size_t current_len = 0;
-    size_t plain_len = 0;
     uint8_t status;
 
     if (ka == NULL || auth == NULL || enc == NULL || cur == NULL) {
@@ -566,9 +532,7 @@ static uint8_t sub_change_pin(omk_ctap *ct, const omk_cbor_doc *doc,
                          cur->data, cur->len)) {
         return OMK_CTAP2_ERR_PIN_AUTH_INVALID;
     }
-    if (!pin_decrypt(ct, cur->data, cur->len, current, sizeof current, 16,
-                     &current_len) ||
-        current_len != 16) {
+    if (!pin_decrypt(ct, cur->data, cur->len, current, sizeof current, 16)) {
         status = OMK_CTAP1_ERR_INVALID_PARAMETER;
         goto done;
     }
@@ -577,13 +541,12 @@ static uint8_t sub_change_pin(omk_ctap *ct, const omk_cbor_doc *doc,
         goto done;
     }
     if (!pin_decrypt(ct, enc->data, enc->len, plain, sizeof plain,
-                     sizeof plain, &plain_len) ||
-        plain_len != 64) {
+                     sizeof plain)) {
         status = OMK_CTAP1_ERR_INVALID_PARAMETER;
         goto done;
     }
     size_t pin_len = 0;
-    if (!pin_unpad(plain, plain_len, &pin_len)) {
+    if (!pin_unpad(plain, sizeof plain, &pin_len)) {
         status = OMK_CTAP1_ERR_INVALID_PARAMETER;
         goto done;
     }
@@ -675,10 +638,7 @@ static uint8_t sub_get_token(omk_ctap *ct, const omk_cbor_doc *doc,
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
     uint8_t plain[32] = {0};
-    size_t plain_len = 0;
-    if (!pin_decrypt(ct, enc->data, enc->len, plain, sizeof plain, 16,
-                     &plain_len) ||
-        plain_len != 16) {
+    if (!pin_decrypt(ct, enc->data, enc->len, plain, sizeof plain, 16)) {
         omk_memzero(plain, sizeof plain);
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
@@ -732,10 +692,7 @@ static uint8_t sub_get_token_permissions(omk_ctap *ct,
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
     uint8_t plain[32] = {0};
-    size_t plain_len = 0;
-    if (!pin_decrypt(ct, enc->data, enc->len, plain, sizeof plain, 16,
-                     &plain_len) ||
-        plain_len != 16) {
+    if (!pin_decrypt(ct, enc->data, enc->len, plain, sizeof plain, 16)) {
         omk_memzero(plain, sizeof plain);
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }

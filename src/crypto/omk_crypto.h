@@ -116,6 +116,9 @@ bool omk_p256_keygen(bool (*rng)(void *ctx, void *out, size_t len), void *ctx,
 bool omk_p256_keypair_from_scalar(const uint8_t d[OMK_P256_SCALAR_LEN],
                                   omk_p256_keypair *out);
 
+/* Check [1, n-1] without deriving a public key. */
+bool omk_p256_scalar_valid(const uint8_t d[OMK_P256_SCALAR_LEN]);
+
 /* Validate an uncompressed point: prefix, curve membership, not infinity. */
 bool omk_p256_point_valid(const uint8_t pub[OMK_P256_PUBLIC_LEN]);
 

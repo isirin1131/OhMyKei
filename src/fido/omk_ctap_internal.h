@@ -7,6 +7,8 @@
 
 #define OMK_CTAP_ABORTED 0xFE
 #define OMK_CTAP_PIN_PROBE 0xFD
+/* ES256 DER: SEQUENCE + two positive 33-byte INTEGERs; Ed25519: 64 bytes. */
+#define OMK_CTAP_SIGNATURE_MAX 72
 
 /* ---- common helpers (omk_ctap.c) ---- */
 uint64_t omk_ctap_now_ms(const omk_ctap *ct);
@@ -43,8 +45,6 @@ uint8_t omk_ctap_authorize_raw(omk_ctap *ct, const omk_cbor_val *param,
                                uint32_t protocol, const uint8_t *msg,
                                size_t msg_len, uint8_t perm,
                                const uint8_t *rp_hash, bool *uv_out);
-bool omk_ctap_puat_valid(const omk_ctap *ct, uint8_t perm,
-                         const uint8_t *rp_hash, bool *uv_out);
 void omk_ctap_puat_invalidate(omk_ctap *ct);
 uint8_t omk_ctap_cmd_clientpin(omk_ctap *ct, const omk_cbor_doc *doc,
                                const omk_cbor_val *req, uint32_t cid);
@@ -69,6 +69,7 @@ bool omk_ctap_hmac_secret_output(const omk_ctap *ct,
 /* Derive the credential public key from its stored seed. */
 bool omk_ctap_cred_public_key(uint8_t alg, const uint8_t seed[32],
                               uint8_t pub[65], size_t *pub_len);
+/* sig must have room for OMK_CTAP_SIGNATURE_MAX bytes. */
 bool omk_ctap_sign(omk_ctap *ct, uint8_t alg, const uint8_t seed[32],
                    const uint8_t *data, size_t len, uint8_t *sig,
                    size_t *sig_len);

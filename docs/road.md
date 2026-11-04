@@ -7,7 +7,15 @@
 
 ---
 
+2026-11-04 同步：已完成 DER/descriptor/格式偏好字段修复，精简无用公钥计算和枚举重复逻辑；随后清理 CTAP/PIN 的重复检查、无用状态与重复 PUAT 查询接口，扩展 HMAC 派生结果改为局部使用后清理。验证记录见 [audit-plan.md](audit-plan.md#55-2026-11-04-ctappin-过度防御清理)。当前为 dev 阶段，OTP 熔丝和 boot 刷写锁定不在本轮实现范围。
+
 ## 1. 范围总表
+
+2026-11-04 自动化补充：已有 Colima 原生核心 + UHID 路径，可在无真机条件下运行
+九项核心回归和十项独立客户端端到端测试；Linux UBSan 发现的可选用户字段空指针
+零长度拷贝已修复。硬件时序和官方完整套件结果单独记录，见 [automation.md](automation.md)。
+官方 v1.9.3.1 的 GetInfo/PIN 协商最小集已取得 5 通过、2 能力不适用跳过、0 失败；
+这验证了官方运行器接入，不代表完整 CTAP 2.3 套件通过。
 
 | 类别 | 项目 | 决定 |
 |---|---|---|
@@ -94,7 +102,8 @@ remainingDiscoverableCredentials  按“最大字段尺寸”保守估算
   - `up:false` 的预检（pre-flight）请求不等触摸，flags 里 up=0。
   - 没有 uv 时，返回的 user 里不能带 name/displayName。
 - 没有显示屏，所以多凭据时返回 `numberOfCredentials`，用 GetNextAssertion 迭代：状态带 30 s 计时器，期间出现任何其他命令就丢弃状态。
-- `pubKeyCredParams` 要整个遍历校验，选第一个支持的算法；`attestationFormatsPreference` 如果只有 `"none"`，就省略认证声明。
+- `pubKeyCredParams` 要整个遍历校验，选第一个支持的算法；`attestationFormatsPreference (0x0B)` 如果只有 `"none"`，就省略认证声明。
+- ES256 的 packed 自证明和断言签名使用 ASN.1 DER，Ed25519 保持 64 字节。断言仅校验算法和 P-256 标量范围，不为校验额外派生未使用的公钥。
 
 ### 3.5 签名计数器
 
@@ -103,7 +112,8 @@ remainingDiscoverableCredentials  按“最大字段尺寸”保守估算
 
 ### 3.6 ClientPIN
 
-- 两个协议共用全局 PUAT 状态（权限集合、权限 RP ID、使用计时器、userPresent / userVerified 标志）。每个协议有自己的 ECDH 密钥和 token，token 统一用 32 字节。计时器方向：初始 30 s 内必须用一次，最长 10 min；不做滚动计时器。
+- 当前实现中两个协议共用 ECDH 协商密钥和一个 32 字节 PUAT，以及权限、RP 绑定和使用计时状态。初始 30 s 内必须使用，之后每次成功授权刷新 30 s 空闲窗口；自签发起的 10 min 绝对期限不刷新。有效性判据仅在真实授权路径维护。
+- COSE 类型与坐标长度在解析层检查，曲线点合法性由 ECDH 原语统一检查。PIN 解密前检查密文形状和输出容量，调用者依赖其成功契约，不再复查固定明文长度。
 - 子命令：getPINRetries（带 `powerCycleState`）、getKeyAgreement、setPIN、changePIN、getPinToken、getPinUvAuthTokenUsingPinWithPermissions。permissions 先按 getInfo 校验，返回 `UNAUTHORIZED_PERMISSION`：本设备上 `be`/`lbw`/`acfg`/`pcmr` 一律拒绝，只放行 mc/ga/cm。
 - **安全行为**：`pinRetries`（最多 8 次）**先持久化减一，再比较**；每次上电连续错 3 次返回 `PIN_AUTH_BLOCKED`（计数只放 RAM）；比对失败时调用 `regenerate()`；改 PIN 后重置所有 PUAT。PIN 保存 `LEFT(SHA-256(pin),16)`，保护强度要和私钥相同。
 - 这几条要在 host 测试和 fuzz 里覆盖（ROADMAP 第 3 阶段的“掉电一致性”主要就落在这里和计数器上）。
@@ -113,7 +123,8 @@ remainingDiscoverableCredentials  按“最大字段尺寸”保守估算
 - 子命令：getCredsMetadata、enumerateRPsBegin/GetNextRP、enumerateCredentialsBegin/GetNext、deleteCredential、updateUserInformation。
 - 校验：`cm` 权限；枚举类命令要求 PUAT **没有**绑定 RP ID；删除和更新允许 RP ID 匹配的 PUAT（`ssh-keygen -K` 这类场景会用到）。
 - 存储的 rpId 可以按 §6.8.7 截断后用于展示，**比较时必须用完整值或 rpIdHash**。
-- 返回值里 rp、user、credentialID、publicKey、credProtect 都要有。枚举状态是有状态命令，PUAT 过期后要丢弃。
+- 各子命令按规范返回相应的 rp、user、credentialID、publicKey、credProtect。credentialID 在枚举响应及删除/更新参数中都是包含 `id`、`type` 的 descriptor map。
+- 枚举首条与续页共用凭据响应函数，仅首条含 `totalCredentials`；RP 哈希在入口校验后传给内部 helper。枚举状态是有状态命令，PUAT 过期后要丢弃。
 
 ### 3.8 Reset / Selection
 

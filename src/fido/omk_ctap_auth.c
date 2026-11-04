@@ -38,17 +38,42 @@ bool omk_ctap_cred_public_key(uint8_t alg, const uint8_t seed[32],
     return false;
 }
 
+static size_t put_der_integer(uint8_t *out, const uint8_t value[32]) {
+    size_t first = 0;
+    while (first < 31 && value[first] == 0) {
+        first++;
+    }
+    const size_t len = 32 - first;
+    const bool pad = (value[first] & 0x80u) != 0;
+    out[0] = 0x02;
+    out[1] = (uint8_t)(len + (pad ? 1u : 0u));
+    size_t pos = 2;
+    if (pad) {
+        out[pos++] = 0;
+    }
+    memcpy(out + pos, value + first, len);
+    return pos + len;
+}
+
 bool omk_ctap_sign(omk_ctap *ct, uint8_t alg, const uint8_t seed[32],
                    const uint8_t *data, size_t len, uint8_t *sig,
                    size_t *sig_len) {
     (void)ct;
     if (alg == OMK_ALG_ES256) {
         uint8_t hash[32];
+        uint8_t raw[64];
         omk_sha256(data, len, hash);
-        if (!omk_p256_ecdsa_sign(seed, hash, sig, NULL, NULL)) {
+        if (!omk_p256_ecdsa_sign(seed, hash, raw, NULL, NULL)) {
             return false;
         }
-        *sig_len = 64;
+        /* WebAuthn packed attestation and assertions require DER, while the
+         * crypto primitive deliberately exposes fixed-width r || s. */
+        sig[0] = 0x30;
+        size_t len_der = 2;
+        len_der += put_der_integer(sig + len_der, raw);
+        len_der += put_der_integer(sig + len_der, raw + 32);
+        sig[1] = (uint8_t)(len_der - 2);
+        *sig_len = len_der;
         return true;
     }
     if (alg == OMK_ALG_EDDSA) {
@@ -108,11 +133,9 @@ static bool ext_shared(omk_ctap *ct, const omk_cbor_doc *doc,
     pub[0] = 0x04;
     memcpy(pub + 1, x->data, 32);
     memcpy(pub + 33, y->data, 32);
-    if (!omk_p256_point_valid(pub)) {
-        return false;
-    }
     uint8_t shared[32];
     memset(shared, 0, sizeof shared);
+    /* ECDH validates the assembled point before scalar multiplication. */
     if (!omk_p256_ecdh(ct->pin.key_priv, pub, shared)) {
         omk_memzero(shared, sizeof shared);
         memset(aes, 0, 32);
@@ -187,8 +210,7 @@ static bool ext_encrypt(const omk_port *port, const uint8_t aes[32],
 static uint8_t ext_parse_request(omk_ctap *ct, const omk_cbor_doc *doc,
                                  const omk_cbor_val *ext, uint8_t *salt,
                                  size_t salt_cap, size_t *salt_len,
-                                 uint8_t aes[32], uint8_t hmac[32],
-                                 uint32_t *protocol) {
+                                 uint8_t aes[32], uint32_t *protocol) {
     const omk_cbor_val *ka = omk_cbor_map_get_int(doc, ext, 0x01);
     const omk_cbor_val *salt_enc = omk_cbor_map_get_int(doc, ext, 0x02);
     const omk_cbor_val *salt_auth = omk_cbor_map_get_int(doc, ext, 0x03);
@@ -211,11 +233,14 @@ static uint8_t ext_parse_request(omk_ctap *ct, const omk_cbor_doc *doc,
     if (salt_auth->len != (p == 1 ? 16u : 32u)) {
         return OMK_CTAP2_ERR_PIN_AUTH_INVALID;
     }
+    uint8_t hmac[32];
     if (!ext_shared(ct, doc, ka, p, aes, hmac)) {
+        omk_memzero(hmac, sizeof hmac);
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
     uint8_t mac[32];
     omk_hmac_sha256(hmac, 32, salt_enc->data, salt_enc->len, mac);
+    omk_memzero(hmac, sizeof hmac);
     const bool auth_ok = omk_ct_equal(mac, salt_auth->data, salt_auth->len);
     omk_memzero(mac, sizeof mac);
     if (!auth_ok) {
@@ -227,9 +252,6 @@ static uint8_t ext_parse_request(omk_ctap *ct, const omk_cbor_doc *doc,
         /* The authenticator has already verified saltAuth, so a ciphertext
          * that does not decrypt to exactly 32 or 64 bytes is a malformed
          * parameter rather than an authentication failure. */
-        return OMK_CTAP1_ERR_INVALID_PARAMETER;
-    }
-    if (plain_len != 32 && plain_len != 64) {
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
     *salt_len = plain_len;
@@ -673,7 +695,6 @@ uint8_t omk_ctap_cmd_makecredential(omk_ctap *ct, const omk_cbor_doc *doc,
     size_t hmac_mc_len = 0;
     uint8_t hmac_salt[64] = {0};
     uint8_t hmac_aes[32] = {0};
-    uint8_t hmac_key[32] = {0};
     uint8_t hs_out[64] = {0};
     uint8_t ext_data[200] = {0};
     size_t ext_len = 0;
@@ -712,7 +733,7 @@ uint8_t omk_ctap_cmd_makecredential(omk_ctap *ct, const omk_cbor_doc *doc,
         uint32_t protocol = 1;
         status = ext_parse_request(ct, doc, mc_ext, hmac_salt,
                                    sizeof hmac_salt, &salt_len, hmac_aes,
-                                   hmac_key, &protocol);
+                                   &protocol);
         if (status != OMK_CTAP2_OK) {
             goto done;
         }
@@ -764,7 +785,7 @@ uint8_t omk_ctap_cmd_makecredential(omk_ctap *ct, const omk_cbor_doc *doc,
     }
 
     bool want_attestation = true;
-    const omk_cbor_val *pref = omk_cbor_map_get_int(doc, req, 0x0A);
+    const omk_cbor_val *pref = omk_cbor_map_get_int(doc, req, 0x0B);
     if (pref != NULL) {
         if (pref->type != OMK_CBOR_ARRAY) {
             status = OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
@@ -837,7 +858,7 @@ uint8_t omk_ctap_cmd_makecredential(omk_ctap *ct, const omk_cbor_doc *doc,
         }
         memcpy(att_input, auth_data, auth_len);
         memcpy(att_input + auth_len, client_data_hash, 32);
-        uint8_t sig[64];
+        uint8_t sig[OMK_CTAP_SIGNATURE_MAX];
         size_t sig_len = 0;
         if (!omk_ctap_sign(ct, alg, seed, att_input, auth_len + 32, sig,
                            &sig_len)) {
@@ -855,7 +876,6 @@ done:
     omk_memzero(seed, sizeof seed);
     omk_memzero(hmac_salt, sizeof hmac_salt);
     omk_memzero(hmac_aes, sizeof hmac_aes);
-    omk_memzero(hmac_key, sizeof hmac_key);
     omk_memzero(hs_out, sizeof hs_out);
     omk_memzero(hmac_mc, sizeof hmac_mc);
     omk_memzero(ext_data, sizeof ext_data);
@@ -913,12 +933,12 @@ static uint8_t emit_assertion(omk_ctap *ct, const match_t *m,
                               const uint8_t rp_hash[32], bool up, bool uv,
                               const uint8_t *ext_data, size_t ext_len,
                               bool include_number, uint32_t number) {
-    uint8_t pub[65];
-    size_t pub_len = 0;
-    if (!omk_ctap_cred_public_key(m->alg, m->seed, pub, &pub_len)) {
+    /* Reject invalid credentials before consuming the counter. Assertions
+     * do not return a public key, so a scalar range check is sufficient. */
+    if ((m->alg == OMK_ALG_ES256 && !omk_p256_scalar_valid(m->seed)) ||
+        (m->alg != OMK_ALG_ES256 && m->alg != OMK_ALG_EDDSA)) {
         return OMK_CTAP2_ERR_INVALID_CREDENTIAL;
     }
-    (void)pub_len;
     uint8_t flags = 0;
     if (up) {
         flags |= AUTH_FLAG_UP;
@@ -954,7 +974,7 @@ static uint8_t emit_assertion(omk_ctap *ct, const match_t *m,
     }
     memcpy(sign_input, ad, ad_len);
     memcpy(sign_input + ad_len, client_data_hash, 32);
-    uint8_t sig[64];
+    uint8_t sig[OMK_CTAP_SIGNATURE_MAX];
     size_t sig_len = 0;
     if (!omk_ctap_sign(ct, m->alg, m->seed, sign_input, ad_len + 32, sig,
                        &sig_len)) {
@@ -1080,7 +1100,6 @@ static uint8_t parse_hmac_extension(omk_ctap *ct, const omk_cbor_doc *doc,
     ct->ga.hmac_protocol = 0;
     omk_memzero(ct->ga.hmac_salt, sizeof ct->ga.hmac_salt);
     omk_memzero(ct->ga.hmac_aes, sizeof ct->ga.hmac_aes);
-    omk_memzero(ct->ga.hmac_hmac, sizeof ct->ga.hmac_hmac);
     if (extv == NULL) {
         return OMK_CTAP2_OK;
     }
@@ -1101,7 +1120,7 @@ static uint8_t parse_hmac_extension(omk_ctap *ct, const omk_cbor_doc *doc,
     uint32_t protocol = 1;
     const uint8_t status = ext_parse_request(
         ct, doc, hs, ct->ga.hmac_salt, sizeof ct->ga.hmac_salt,
-        &ct->ga.hmac_salt_len, ct->ga.hmac_aes, ct->ga.hmac_hmac, &protocol);
+        &ct->ga.hmac_salt_len, ct->ga.hmac_aes, &protocol);
     if (status != OMK_CTAP2_OK) {
         return status;
     }

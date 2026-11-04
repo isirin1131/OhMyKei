@@ -441,6 +441,14 @@ static bool scalar_is_valid(const u256 *d) {
     return !u256_is_zero(d) && u256_cmp(d, &N) < 0;
 }
 
+bool omk_p256_scalar_valid(const uint8_t d[OMK_P256_SCALAR_LEN]) {
+    u256 scalar;
+    u256_from_be(&scalar, d);
+    const bool valid = scalar_is_valid(&scalar);
+    omk_memzero(&scalar, sizeof scalar);
+    return valid;
+}
+
 static bool scalar_mul_normal(u256 *r, const u256 *a, const u256 *b) {
     u256 am, bm, rm;
     fn_to_mont(&am, a);
