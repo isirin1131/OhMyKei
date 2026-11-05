@@ -3,6 +3,7 @@
 #include "crypto/omk_crypto.h"
 #include "fido/omk_cbor.h"
 #include "fido/omk_ctap_internal.h"
+#include "fido/omk_pin_protocol.h"
 
 #define AUTH_FLAG_UP 0x01
 #define AUTH_FLAG_UV 0x04
@@ -55,10 +56,9 @@ static size_t put_der_integer(uint8_t *out, const uint8_t value[32]) {
     return pos + len;
 }
 
-bool omk_ctap_sign(omk_ctap *ct, uint8_t alg, const uint8_t seed[32],
+static bool credential_sign(uint8_t alg, const uint8_t seed[32],
                    const uint8_t *data, size_t len, uint8_t *sig,
                    size_t *sig_len) {
-    (void)ct;
     if (alg == OMK_ALG_ES256) {
         uint8_t hash[32];
         uint8_t raw[64];
@@ -90,10 +90,9 @@ bool omk_ctap_sign(omk_ctap *ct, uint8_t alg, const uint8_t seed[32],
 /* hmac-secret                                                             */
 /* ---------------------------------------------------------------------- */
 
-bool omk_ctap_hmac_secret_output(const omk_ctap *ct, const uint8_t seed[32],
+bool omk_ctap_hmac_secret_output(const uint8_t seed[32],
                                  bool uv, const uint8_t *salt, size_t salt_len,
                                  uint8_t *out, size_t *out_len) {
-    (void)ct;
     if (salt_len != 32 && salt_len != 64) {
         return false;
     }
@@ -116,94 +115,21 @@ bool omk_ctap_hmac_secret_output(const omk_ctap *ct, const uint8_t seed[32],
     return true;
 }
 
-static bool ext_shared(omk_ctap *ct, const omk_cbor_doc *doc,
-                       const omk_cbor_val *cose, uint32_t protocol,
-                       uint8_t aes[32], uint8_t hmac[32]) {
-    memset(aes, 0, 32);
-    memset(hmac, 0, 32);
-    const omk_cbor_val *crv = omk_cbor_map_get_int(doc, cose, -1);
-    const omk_cbor_val *x = omk_cbor_map_get_int(doc, cose, -2);
-    const omk_cbor_val *y = omk_cbor_map_get_int(doc, cose, -3);
-    if (crv == NULL || x == NULL || y == NULL || crv->type != OMK_CBOR_UINT ||
-        crv->num != 1 || x->type != OMK_CBOR_BYTES || x->len != 32 ||
-        y->type != OMK_CBOR_BYTES || y->len != 32) {
-        return false;
-    }
-    uint8_t pub[65];
-    pub[0] = 0x04;
-    memcpy(pub + 1, x->data, 32);
-    memcpy(pub + 33, y->data, 32);
-    uint8_t shared[32];
-    memset(shared, 0, sizeof shared);
-    /* ECDH validates the assembled point before scalar multiplication. */
-    if (!omk_p256_ecdh(ct->pin.key_priv, pub, shared)) {
-        omk_memzero(shared, sizeof shared);
-        memset(aes, 0, 32);
-        memset(hmac, 0, 32);
-        return false;
-    }
-    if (protocol == 1) {
-        omk_sha256(shared, 32, aes);
-        memcpy(hmac, aes, 32);
-    } else {
-        uint8_t salt[32] = {0};
-        omk_hkdf_sha256(salt, 32, shared, 32, (const uint8_t *)"CTAP2 AES key",
-                        13, aes, 32);
-        omk_hkdf_sha256(salt, 32, shared, 32, (const uint8_t *)"CTAP2 HMAC key",
-                        14, hmac, 32);
-    }
-    omk_memzero(shared, sizeof shared);
-    return true;
-}
-
-/* hmac-secret accepts only 32- or 64-byte plaintexts.  Reject every other
- * ciphertext shape before touching the caller's output buffer. */
+/* Select the extension's allowed plaintext size before calling the shared
+ * decryptor. ClientPIN uses its own fixed sizes for PINs and PIN hashes. */
 static bool ext_decrypt(const uint8_t aes[32], uint32_t protocol,
                         const uint8_t *in, size_t in_len, uint8_t *out,
                         size_t out_cap, size_t *out_len) {
-    if (protocol == 1) {
-        if ((in_len != 32 && in_len != 64) || in_len > out_cap) {
-            return false;
-        }
-        uint8_t iv[16] = {0};
-        omk_aes256_cbc_decrypt(aes, iv, in, in_len, out);
-        *out_len = in_len;
-        return true;
-    }
-    if (in_len < 16) {
+    const size_t prefix = protocol == 1 ? 0 : 16;
+    if (in_len != 32 + prefix && in_len != 64 + prefix) {
         return false;
     }
-    const size_t plain_len = in_len - 16;
-    if ((plain_len != 32 && plain_len != 64) || plain_len > out_cap) {
+    const size_t plain_len = in_len - prefix;
+    if (plain_len > out_cap ||
+        !omk_pin_protocol_decrypt(aes, protocol, in, in_len, out, plain_len)) {
         return false;
     }
-    omk_aes256_cbc_decrypt(aes, in, in + 16, plain_len, out);
     *out_len = plain_len;
-    return true;
-}
-
-static bool ext_encrypt(const omk_port *port, const uint8_t aes[32],
-                        uint32_t protocol, const uint8_t *in, size_t in_len,
-                        uint8_t *out, size_t *out_len) {
-    if (in_len % 16 != 0) {
-        return false;
-    }
-    if (protocol == 1) {
-        uint8_t iv[16] = {0};
-        omk_aes256_cbc_encrypt(aes, iv, in, in_len, out);
-        *out_len = in_len;
-        return true;
-    }
-    uint8_t iv[16];
-    memset(iv, 0, sizeof iv);
-    if (!port->random_bytes(port->ctx, iv, sizeof iv)) {
-        omk_memzero(iv, sizeof iv);
-        return false;
-    }
-    memcpy(out, iv, 16);
-    omk_aes256_cbc_encrypt(aes, iv, in, in_len, out + 16);
-    omk_memzero(iv, sizeof iv);
-    *out_len = in_len + 16;
     return true;
 }
 
@@ -234,7 +160,7 @@ static uint8_t ext_parse_request(omk_ctap *ct, const omk_cbor_doc *doc,
         return OMK_CTAP2_ERR_PIN_AUTH_INVALID;
     }
     uint8_t hmac[32];
-    if (!ext_shared(ct, doc, ka, p, aes, hmac)) {
+    if (!omk_pin_protocol_derive(doc, ka, p, ct->pin.key_priv, aes, hmac)) {
         omk_memzero(hmac, sizeof hmac);
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
@@ -771,13 +697,13 @@ uint8_t omk_ctap_cmd_makecredential(omk_ctap *ct, const omk_cbor_doc *doc,
             goto done;
         }
         size_t hs_len = 0;
-        if (!omk_ctap_hmac_secret_output(ct, seed, uv_done, hmac_salt,
+        if (!omk_ctap_hmac_secret_output(seed, uv_done, hmac_salt,
                                          salt_len, hs_out, &hs_len)) {
             status = OMK_CTAP1_ERR_INVALID_PARAMETER;
             goto done;
         }
         size_t enc_len = 0;
-        if (!ext_encrypt(ct->port, hmac_aes, protocol, hs_out, hs_len,
+        if (!omk_pin_protocol_encrypt(ct->port, hmac_aes, protocol, hs_out, hs_len,
                          hmac_mc, &enc_len)) {
             status = OMK_CTAP2_ERR_OTHER;
             goto done;
@@ -893,7 +819,7 @@ uint8_t omk_ctap_cmd_makecredential(omk_ctap *ct, const omk_cbor_doc *doc,
         memcpy(att_input + auth_len, client_data_hash, 32);
         uint8_t sig[OMK_CTAP_SIGNATURE_MAX];
         size_t sig_len = 0;
-        if (!omk_ctap_sign(ct, alg, seed, att_input, auth_len + 32, sig,
+        if (!credential_sign(alg, seed, att_input, auth_len + 32, sig,
                            &sig_len)) {
             status = OMK_CTAP2_ERR_OTHER;
             goto done;
@@ -1009,7 +935,7 @@ static uint8_t emit_assertion(omk_ctap *ct, const match_t *m,
     memcpy(sign_input + ad_len, client_data_hash, 32);
     uint8_t sig[OMK_CTAP_SIGNATURE_MAX];
     size_t sig_len = 0;
-    if (!omk_ctap_sign(ct, m->alg, m->seed, sign_input, ad_len + 32, sig,
+    if (!credential_sign(m->alg, m->seed, sign_input, ad_len + 32, sig,
                        &sig_len)) {
         return OMK_CTAP2_ERR_OTHER;
     }
@@ -1099,12 +1025,12 @@ static uint8_t hmac_ext_output(omk_ctap *ct, const uint8_t seed[32], bool uv,
     if (!ct->ga.hmac_secret) {
         goto done;
     }
-    if (!omk_ctap_hmac_secret_output(ct, seed, uv, ct->ga.hmac_salt,
+    if (!omk_ctap_hmac_secret_output(seed, uv, ct->ga.hmac_salt,
                                      ct->ga.hmac_salt_len, hs, &hs_len)) {
         status = OMK_CTAP1_ERR_INVALID_LENGTH;
         goto done;
     }
-    if (!ext_encrypt(ct->port, ct->ga.hmac_aes, ct->ga.hmac_protocol, hs,
+    if (!omk_pin_protocol_encrypt(ct->port, ct->ga.hmac_aes, ct->ga.hmac_protocol, hs,
                      hs_len, enc, &enc_len)) {
         status = OMK_CTAP2_ERR_OTHER;
         goto done;

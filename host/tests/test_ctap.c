@@ -943,7 +943,7 @@ static void test_hmac_secret(fixture *f) {
           "open hmac credential");
     uint8_t expect[32];
     size_t expect_len = 0;
-    check(omk_ctap_hmac_secret_output(&f->ct, cred_seed, false, salt, 32,
+    check(omk_ctap_hmac_secret_output(cred_seed, false, salt, 32,
                                       expect, &expect_len),
           "expected hmac");
     check(memcmp(out, expect, 32) == 0, "hmac output matches");

@@ -18,10 +18,11 @@ python3 host/virtual/run.py test
 
 专用容器名为 `ohmykei-virtual`。脚本显式使用默认 Colima socket，不修改 Docker
 context。容器使用 UHID 与 hidraw 的设备权限，不需要 `--privileged`。
-编译与运行均启用 ASan 和非恢复 UBSan。九项核心测试通过后，运行十三项 HID 回归：
+编译与运行均启用 ASan 和非恢复 UBSan。九项核心测试通过后，运行十四项 HID 回归：
 
 - GetInfo、INIT 和 1500 字节 PING 分片。
 - ES256/Ed25519 自认证和断言独立验签、计数器递增。
+- hmac-secret-mc 与 GetAssertion 扩展输出一致，覆盖协议 1/2 交叉使用和单盐/双盐。
 - 驻留凭据和计数器跨重新上电保留。
 - PIN 协议 1/2、设置/修改 PIN、UV、重试次数持久化。
 - 重新上电使旧 PIN token 失效。
@@ -136,6 +137,16 @@ python3 host/virtual/run.py official --group MakeCredentialRequest --grep 'F-9'
 能复用容器。2026-11-05 固件迭代后自有回归为 9/9 核心（14.39 秒）和
 13/13 HID（22.899 秒）通过；新增测试在修复前已复现对应缺陷。
 
+
+2026-11-05 后续去耦合：ClientPIN 和 hmac-secret 共用 `omk_pin_protocol`，
+签名/扩展输出去掉无用认证器参数，PIN 哈希缓冲区改为实际 16 字节。
+新增独立客户端的协议 1/2 交叉、单双盐、MC/GA 扩展输出与签名回归，原实现和
+收敛后均通过。收敛后 **9/9 核心（14.45 秒）、14/14 HID（26.192 秒）**，
+报告为 `build/virtual-hid/runs/run-tsuw7n2f/result.json`；固件布局检查通过。
+本轮官方全量 **208 通过、118 跳过、0 失败**（579.020 秒，退出码 0），326 项
+最终状态与前轮一致，无漏跑/重复/必跑项跳过。ClientPin2-Policy F-2 收到一次
+`0x02` 后重试通过；仍为上述已知断言冲突，未修改官方套件或固件错误码。
+报告：`build/virtual-hid/official/session-nu4hfwxm/result.json`。
 
 依赖镜像变化时，脚本停止并重命名旧专用容器后创建新容器，不删除旧容器。
 `python3 host/virtual/run.py stop` 停止当前两个专用容器。报告保留，临时合成 Flash

@@ -20,6 +20,10 @@
 定向 76/12/0（无重试），全量 208/118/0，无漏跑，旧 21 项全部通过；自有回归
 为 9/9 核心和 13/13 HID 通过。全量中一个超长 PIN 用例三次重试后通过，
 已记录其断言与规范冲突，并用固定长度回归验证固件行为。
+随后协议密码学去重后，自有回归为 9/9 核心和 14/14 HID 通过，固件布局检查通过；
+新增扩展测试覆盖协议 1/2、单双盐和创建/断言输出一致性。
+去重后的官方全量为 208/118/0，579.020 秒；同一 PIN 策略用例一次重试后通过，
+326 项最终状态与前轮一致，报告 `session-nu4hfwxm/result.json`。
 官方入口默认全量，支持冒烟与定向筛选；报告包含
 完整性判定、重试和环境标识。该结果不代表一致性认证通过。
 
@@ -120,6 +124,7 @@ remainingDiscoverableCredentials  按“最大字段尺寸”保守估算
 
 - 当前实现中两个协议共用 ECDH 协商密钥和一个 32 字节 PUAT，以及权限、RP 绑定和使用计时状态。初始 30 s 内必须使用，之后每次成功授权刷新 30 s 空闲窗口；自签发起的 10 min 绝对期限不刷新。有效性判据仅在真实授权路径维护。
 - COSE 类型与坐标长度在解析层检查，曲线点合法性由 ECDH 原语统一检查。PIN 解密前检查密文形状和输出容量，调用者依赖其成功契约，不再复查固定明文长度。
+- ClientPIN 与 hmac-secret 共用 `omk_pin_protocol` 的协商与 CBC 运算；该模块不访问整个认证器状态。命令层选定允许的明文长度，PIN 哈希直接使用 16 字节缓冲区。
 - 子命令：getPINRetries（带 `powerCycleState`）、getKeyAgreement、setPIN、changePIN、getPinToken、getPinUvAuthTokenUsingPinWithPermissions。permissions 先按 getInfo 校验，返回 `UNAUTHORIZED_PERMISSION`：本设备上 `be`/`lbw`/`acfg`/`pcmr` 一律拒绝，只放行 mc/ga/cm。
 - **安全行为**：`pinRetries`（最多 8 次）**先持久化减一，再比较**；每次上电连续错 3 次返回 `PIN_AUTH_BLOCKED`（计数只放 RAM）；比对失败时调用 `regenerate()`；改 PIN 后重置所有 PUAT。PIN 保存 `LEFT(SHA-256(pin),16)`，保护强度要和私钥相同。
 - 这几条要在 host 测试和 fuzz 里覆盖（ROADMAP 第 3 阶段的“掉电一致性”主要就落在这里和计数器上）。

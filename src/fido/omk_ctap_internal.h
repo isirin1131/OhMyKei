@@ -61,17 +61,11 @@ uint8_t omk_ctap_cmd_credmgmt(omk_ctap *ct, const omk_cbor_doc *doc,
                               const omk_cbor_val *req, uint32_t cid);
 
 /* ---- extensions ---- */
-bool omk_ctap_hmac_secret_output(const omk_ctap *ct,
-                                 const uint8_t seed[32], bool uv,
+bool omk_ctap_hmac_secret_output(const uint8_t seed[32], bool uv,
                                  const uint8_t *salt, size_t salt_len,
                                  uint8_t *out, size_t *out_len);
 
 /* Derive the credential public key from its stored seed. */
 bool omk_ctap_cred_public_key(uint8_t alg, const uint8_t seed[32],
                               uint8_t pub[65], size_t *pub_len);
-/* sig must have room for OMK_CTAP_SIGNATURE_MAX bytes. */
-bool omk_ctap_sign(omk_ctap *ct, uint8_t alg, const uint8_t seed[32],
-                   const uint8_t *data, size_t len, uint8_t *sig,
-                   size_t *sig_len);
-
 #endif /* OMK_FIDO_CTAP_INTERNAL_H */

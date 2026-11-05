@@ -3,6 +3,7 @@
 #include "crypto/omk_crypto.h"
 #include "fido/omk_cbor.h"
 #include "fido/omk_ctap_internal.h"
+#include "fido/omk_pin_protocol.h"
 
 /* ---------------------------------------------------------------------- */
 /* PUAT state                                                              */
@@ -239,103 +240,14 @@ static uint8_t pin_check_policy(const uint8_t *pin, size_t len) {
     return OMK_CTAP2_OK;
 }
 
-static bool cose_to_pub(const omk_cbor_doc *doc, const omk_cbor_val *cose,
-                        uint8_t pub[65]) {
-    if (cose == NULL || cose->type != OMK_CBOR_MAP) {
-        return false;
-    }
-    const omk_cbor_val *crv = omk_cbor_map_get_int(doc, cose, -1);
-    const omk_cbor_val *x = omk_cbor_map_get_int(doc, cose, -2);
-    const omk_cbor_val *y = omk_cbor_map_get_int(doc, cose, -3);
-    if (crv == NULL || x == NULL || y == NULL || crv->type != OMK_CBOR_UINT ||
-        crv->num != 1 || x->type != OMK_CBOR_BYTES || x->len != 32 ||
-        y->type != OMK_CBOR_BYTES || y->len != 32) {
-        return false;
-    }
-    pub[0] = 0x04;
-    memcpy(pub + 1, x->data, 32);
-    memcpy(pub + 33, y->data, 32);
-    /* ECDH validates the assembled point before scalar multiplication. */
-    return true;
-}
-
-static void zero32(uint8_t out[32]) {
-    memset(out, 0, 32);
-}
-
 static bool pin_derive_shared(omk_ctap *ct, const omk_cbor_doc *doc,
                               uint32_t protocol,
                               const omk_cbor_val *cose) {
-    uint8_t pub[65];
-    if (!cose_to_pub(doc, cose, pub)) {
+    if (!omk_pin_protocol_derive(doc, cose, protocol, ct->pin.key_priv,
+                                 ct->pin.shared_aes, ct->pin.shared_hmac)) {
         return false;
-    }
-    uint8_t shared[32];
-    memset(shared, 0, sizeof shared);
-    if (!omk_p256_ecdh(ct->pin.key_priv, pub, shared)) {
-        omk_memzero(shared, sizeof shared);
-        return false;
-    }
-    if (protocol == 1) {
-        omk_sha256(shared, 32, ct->pin.shared_aes);
-        memcpy(ct->pin.shared_hmac, ct->pin.shared_aes, 32);
-    } else {
-        uint8_t salt[32];
-        zero32(salt);
-        omk_hkdf_sha256(salt, 32, shared, 32, (const uint8_t *)"CTAP2 AES key",
-                        13, ct->pin.shared_aes, 32);
-        omk_hkdf_sha256(salt, 32, shared, 32, (const uint8_t *)"CTAP2 HMAC key",
-                        14, ct->pin.shared_hmac, 32);
-        omk_memzero(salt, sizeof salt);
     }
     ct->pin.protocol = (uint8_t)protocol;
-    omk_memzero(shared, sizeof shared);
-    return true;
-}
-
-/* Decrypt into a caller buffer only after proving that the ciphertext has
- * exactly the length the caller expects and that the plaintext fits. */
-static bool pin_decrypt(omk_ctap *ct, const uint8_t *in, size_t in_len,
-                        uint8_t *out, size_t out_cap, size_t expected) {
-    if (expected == 0 || expected % 16 != 0 || expected > out_cap) {
-        return false;
-    }
-    if (ct->pin.protocol == 1) {
-        if (in_len != expected) {
-            return false;
-        }
-        uint8_t iv[16] = {0};
-        omk_aes256_cbc_decrypt(ct->pin.shared_aes, iv, in, in_len, out);
-        return true;
-    }
-    if (in_len < 16 || in_len - 16 != expected) {
-        return false;
-    }
-    omk_aes256_cbc_decrypt(ct->pin.shared_aes, in, in + 16, expected, out);
-    return true;
-}
-
-static bool pin_encrypt(omk_ctap *ct, const uint8_t *in, size_t in_len,
-                        uint8_t *out, size_t *out_len) {
-    if (in_len % 16 != 0) {
-        return false;
-    }
-    if (ct->pin.protocol == 1) {
-        uint8_t iv[16] = {0};
-        omk_aes256_cbc_encrypt(ct->pin.shared_aes, iv, in, in_len, out);
-        *out_len = in_len;
-        return true;
-    }
-    uint8_t iv[16];
-    memset(iv, 0, sizeof iv);
-    if (!ct->port->random_bytes(ct->port->ctx, iv, sizeof iv)) {
-        omk_memzero(iv, sizeof iv);
-        return false;
-    }
-    memcpy(out, iv, 16);
-    omk_aes256_cbc_encrypt(ct->pin.shared_aes, iv, in, in_len, out + 16);
-    omk_memzero(iv, sizeof iv);
-    *out_len = in_len + 16;
     return true;
 }
 
@@ -473,8 +385,8 @@ static uint8_t sub_set_pin(omk_ctap *ct, const omk_cbor_doc *doc,
     if (!pin_check_auth(ct, auth->data, auth->len, enc->data, enc->len)) {
         return OMK_CTAP2_ERR_PIN_AUTH_INVALID;
     }
-    if (!pin_decrypt(ct, enc->data, enc->len, plain, sizeof plain,
-                     sizeof plain)) {
+    if (!omk_pin_protocol_decrypt(ct->pin.shared_aes, protocol, enc->data,
+                                   enc->len, plain, sizeof plain)) {
         status = OMK_CTAP1_ERR_INVALID_PARAMETER;
         goto done;
     }
@@ -507,7 +419,7 @@ static uint8_t sub_change_pin(omk_ctap *ct, const omk_cbor_doc *doc,
     const omk_cbor_val *auth = omk_cbor_map_get_int(doc, req, 0x04);
     const omk_cbor_val *enc = omk_cbor_map_get_int(doc, req, 0x05);
     const omk_cbor_val *cur = omk_cbor_map_get_int(doc, req, 0x06);
-    uint8_t current[32] = {0};
+    uint8_t current[16] = {0};
     uint8_t plain[64] = {0};
     uint8_t hash[16] = {0};
     uint8_t status;
@@ -532,7 +444,8 @@ static uint8_t sub_change_pin(omk_ctap *ct, const omk_cbor_doc *doc,
                          cur->data, cur->len)) {
         return OMK_CTAP2_ERR_PIN_AUTH_INVALID;
     }
-    if (!pin_decrypt(ct, cur->data, cur->len, current, sizeof current, 16)) {
+    if (!omk_pin_protocol_decrypt(ct->pin.shared_aes, protocol, cur->data,
+                                   cur->len, current, sizeof current)) {
         status = OMK_CTAP1_ERR_INVALID_PARAMETER;
         goto done;
     }
@@ -540,8 +453,8 @@ static uint8_t sub_change_pin(omk_ctap *ct, const omk_cbor_doc *doc,
     if (status != OMK_CTAP2_OK) {
         goto done;
     }
-    if (!pin_decrypt(ct, enc->data, enc->len, plain, sizeof plain,
-                     sizeof plain)) {
+    if (!omk_pin_protocol_decrypt(ct->pin.shared_aes, protocol, enc->data,
+                                   enc->len, plain, sizeof plain)) {
         status = OMK_CTAP1_ERR_INVALID_PARAMETER;
         goto done;
     }
@@ -582,7 +495,8 @@ static uint8_t issue_token(omk_ctap *ct, uint8_t permissions,
     if (!ct->port->random_bytes(ct->port->ctx, token, sizeof token)) {
         goto done;
     }
-    if (!pin_encrypt(ct, token, sizeof token, enc, &enc_len)) {
+    if (!omk_pin_protocol_encrypt(ct->port, ct->pin.shared_aes, ct->pin.protocol,
+                                   token, sizeof token, enc, &enc_len)) {
         goto done;
     }
 
@@ -637,8 +551,9 @@ static uint8_t sub_get_token(omk_ctap *ct, const omk_cbor_doc *doc,
     if (!pin_derive_shared(ct, doc, protocol, ka)) {
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
-    uint8_t plain[32] = {0};
-    if (!pin_decrypt(ct, enc->data, enc->len, plain, sizeof plain, 16)) {
+    uint8_t plain[16] = {0};
+    if (!omk_pin_protocol_decrypt(ct->pin.shared_aes, protocol, enc->data,
+                                   enc->len, plain, sizeof plain)) {
         omk_memzero(plain, sizeof plain);
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
@@ -691,8 +606,9 @@ static uint8_t sub_get_token_permissions(omk_ctap *ct,
     if (!pin_derive_shared(ct, doc, protocol, ka)) {
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
-    uint8_t plain[32] = {0};
-    if (!pin_decrypt(ct, enc->data, enc->len, plain, sizeof plain, 16)) {
+    uint8_t plain[16] = {0};
+    if (!omk_pin_protocol_decrypt(ct->pin.shared_aes, protocol, enc->data,
+                                   enc->len, plain, sizeof plain)) {
         omk_memzero(plain, sizeof plain);
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }

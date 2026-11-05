@@ -123,6 +123,51 @@ class VirtualHidTests(unittest.TestCase):
         second = self.assert_credential(credential, discoverable=True)
         self.assertGreater(second.auth_data.counter, first.auth_data.counter)
 
+    def test_hmac_secret_protocols(self):
+        salts = os.urandom(64)
+        for creation_protocol in (PinProtocolV1(), PinProtocolV2()):
+            with self.subTest(creation_protocol=creation_protocol.VERSION):
+                def agreement(protocol, plain):
+                    peer = self.ctap.client_pin(
+                        protocol.VERSION, ClientPin.CMD.GET_KEY_AGREEMENT
+                    )[ClientPin.RESULT.KEY_AGREEMENT]
+                    key_agreement, shared = protocol.encapsulate(peer)
+                    encrypted = protocol.encrypt(shared, plain)
+                    return shared, {
+                        1: key_agreement, 2: encrypted,
+                        3: protocol.authenticate(shared, encrypted),
+                        4: protocol.VERSION,
+                    }
+
+                shared, extension = agreement(creation_protocol, salts)
+                challenge = os.urandom(32)
+                response = self.ctap.make_credential(
+                    challenge, RP, {"id": os.urandom(16)},
+                    [{"type": "public-key", "alg": -7}],
+                    extensions={"hmac-secret": True, "hmac-secret-mc": extension},
+                )
+                PackedAttestation().verify(response.att_stmt, response.auth_data, challenge)
+                credential = response.auth_data.credential_data
+                self.assertIs(response.auth_data.extensions["hmac-secret"], True)
+                expected = creation_protocol.decrypt(
+                    shared, response.auth_data.extensions["hmac-secret-mc"]
+                )
+                self.assertEqual(len(expected), 64)
+                self.assertFalse(expected[:32] == expected[32:])
+
+                for protocol in (PinProtocolV1(), PinProtocolV2()):
+                    for salt_len in (32, 64):
+                        with self.subTest(protocol=protocol.VERSION, salt_len=salt_len):
+                            shared, extension = agreement(protocol, salts[:salt_len])
+                            assertion = self.assert_credential(
+                                credential, extensions={"hmac-secret": extension}
+                            )
+                            actual = protocol.decrypt(
+                                shared, assertion.auth_data.extensions["hmac-secret"]
+                            )
+                            # Never include extension secrets in assertion output.
+                            self.assertTrue(actual == expected[:salt_len])
+
     def test_pin_protocols_and_change(self):
         for protocol in (PinProtocolV1(), PinProtocolV2()):
             with self.subTest(protocol=protocol.VERSION):

@@ -16,6 +16,7 @@ security certification.
 | Persistent state | `src/fido/omk_store.{h,c}` |
 | CTAP dispatcher/getInfo/reset/selection | `src/fido/omk_ctap.{h,c}` |
 | ClientPIN + PUAT | `src/fido/omk_ctap_pin.c` |
+| Shared PIN/UV protocol cryptography | `src/fido/omk_pin_protocol.{h,c}` |
 | MakeCredential/GetAssertion/extensions | `src/fido/omk_ctap_auth.c` |
 | CredentialManagement | `src/fido/omk_ctap_mgmt.c` |
 | Firmware USB/board glue | `src/platform/*`, `src/main.c` |
@@ -73,8 +74,10 @@ it through the kernel's hidraw path. The platform uses monotonic time,
 the process to model power cycling while preserving the Flash file.
 
 `python3 host/virtual/run.py test` uses a dedicated Colima container and runs
-the nine executable host tests plus thirteen independent `python-fido2` HID tests.
-Both sets passed on 2026-11-05, in 14.39 and 22.899 seconds respectively.
+the nine executable host tests plus fourteen independent `python-fido2` HID tests.
+After protocol deduplication on 2026-11-05, both passed in 14.45 and 26.192 seconds.
+The new extension regression checks protocol 1/2 interoperability, one/two salts,
+and matching hmac-secret-mc/GetAssertion outputs with independently verified signatures.
 The core validates complete algorithm and credential lists before selecting an
 algorithm or matching a credential; unknown types remain valid non-matches.
 Unsupported enterprise attestation requests return `INVALID_PARAMETER`.
@@ -105,6 +108,9 @@ ClientPin2-Policy F-2 passed only after three retries: the official assertion
 expects PIN_POLICY_VIOLATION even for padded plaintext longer than 64 bytes,
 where CTAP 2.3 §6.5.5.5 requires INVALID_PARAMETER. The implementation follows
 the specification, with deterministic tests for 64/80/96/112/128-byte inputs.
+After protocol deduplication, the full run again completed 208/118/0 in 579.020
+seconds with no changed case outcomes. The same PIN-policy case needed one retry;
+report: `build/virtual-hid/official/session-nu4hfwxm/result.json`.
 Seven runner checks and real skip/timeout/interruption paths also passed.
 This does not emulate RP2350 instructions, TinyUSB, the hardware RNG or Flash
 timing; the result is not hardware certification or a retry-free full pass.
@@ -541,7 +547,9 @@ a hardware TRNG model.
 * `hmac-secret`: the per-credential secret is derived with HKDF-SHA-256 from
   the credential seed with a domain-separation string and a UV flag, so
   non-resident credentials work too. 32- and 64-byte salts are supported;
-  protocol 1 and 2 key agreement is implemented independently of ClientPIN.
+  protocol 1 and 2 key agreement and CBC operations share `omk_pin_protocol`
+  with ClientPIN. The module takes explicit inputs and never accesses `omk_ctap`;
+  each command retains its own state, error mapping and allowed plaintext sizes.
   The request HMAC key is local to parsing and cleared after MAC computation
   or agreement failure. Continuation state retains the salts and AES key needed
   for subsequent assertions. Decryption accepts only 32/64-byte plaintexts;

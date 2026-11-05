@@ -7,6 +7,7 @@ set(OMK_CORE_SOURCES
     "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_ctaphid.c"
     "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_store.c"
     "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_ctap.c"
+    "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_pin_protocol.c"
     "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_ctap_pin.c"
     "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_ctap_auth.c"
     "${CMAKE_CURRENT_LIST_DIR}/../src/fido/omk_ctap_mgmt.c"
