@@ -105,6 +105,13 @@ uint8_t omk_ctap_authorize(omk_ctap *ct, const omk_cbor_doc *doc,
 /* PIN protocol cryptography                                               */
 /* ---------------------------------------------------------------------- */
 
+/* Owned by one ClientPIN call and wiped at its single dispatch exit. */
+typedef struct {
+    uint32_t protocol;
+    uint8_t aes[32];
+    uint8_t hmac[32];
+} pin_exchange;
+
 static bool pin_rng(void *ctx, void *out, size_t len) {
     omk_ctap *ct = (omk_ctap *)ctx;
     return ct->port->random_bytes(ct->port->ctx, out, len);
@@ -113,20 +120,18 @@ static bool pin_rng(void *ctx, void *out, size_t len) {
 /* Rotate the PIN key agreement after a failed comparison so a platform that
  * learned (or tried to brute-force) the old shared secret cannot reuse it.
  * A failed RNG never installs a partial key pair; the old agreement key is
- * kept but every derived shared secret is discarded and the caller fails
- * closed instead of continuing with stale or zeroed key material. */
+ * kept and the command fails. Its request-local exchange is wiped by the
+ * ClientPIN entry point on return. */
 static bool pin_regenerate_agreement(omk_ctap *ct) {
     omk_p256_keypair kp;
     memset(&kp, 0, sizeof kp);
     if (!omk_p256_keygen(pin_rng, ct, &kp)) {
         omk_memzero(&kp, sizeof kp);
-        omk_ctap_pin_shared_clear(ct);
         return false;
     }
     memcpy(ct->pin.key_priv, kp.d, 32);
     memcpy(ct->pin.key_pub, kp.pub, 65);
     omk_memzero(&kp, sizeof kp);
-    omk_ctap_pin_shared_clear(ct);
     return true;
 }
 
@@ -240,28 +245,20 @@ static uint8_t pin_check_policy(const uint8_t *pin, size_t len) {
     return OMK_CTAP2_OK;
 }
 
-static bool pin_derive_shared(omk_ctap *ct, const omk_cbor_doc *doc,
-                              uint32_t protocol,
-                              const omk_cbor_val *cose) {
-    if (!omk_pin_protocol_derive(doc, cose, protocol, ct->pin.key_priv,
-                                 ct->pin.shared_aes, ct->pin.shared_hmac)) {
-        return false;
-    }
-    ct->pin.protocol = (uint8_t)protocol;
-    return true;
+static bool pin_derive_shared(const omk_ctap *ct, const omk_cbor_doc *doc,
+                              const omk_cbor_val *cose, pin_exchange *exchange) {
+    return omk_pin_protocol_derive(doc, cose, exchange->protocol,
+                                   ct->pin.key_priv, exchange->aes,
+                                   exchange->hmac);
 }
 
-static size_t pin_auth_len(const omk_ctap *ct) {
-    return ct->pin.protocol == 1 ? 16 : 32;
-}
-
-static bool pin_check_auth2(omk_ctap *ct, const uint8_t *param,
+static bool pin_check_auth2(const pin_exchange *exchange, const uint8_t *param,
                             size_t param_len, const uint8_t *m1, size_t n1,
                             const uint8_t *m2, size_t n2) {
     uint8_t opad[64];
     uint8_t mac[32];
     omk_sha256_ctx inner;
-    omk_hmac_sha256_init(&inner, opad, ct->pin.shared_hmac, 32);
+    omk_hmac_sha256_init(&inner, opad, exchange->hmac, 32);
     if (n1 != 0) {
         omk_hmac_sha256_update(&inner, m1, n1);
     }
@@ -269,16 +266,16 @@ static bool pin_check_auth2(omk_ctap *ct, const uint8_t *param,
         omk_hmac_sha256_update(&inner, m2, n2);
     }
     omk_hmac_sha256_final(&inner, opad, mac);
-    const size_t n = pin_auth_len(ct);
+    const size_t n = exchange->protocol == 1 ? 16 : 32;
     const bool ok = param_len == n && omk_ct_equal(mac, param, n);
     omk_memzero(mac, sizeof mac);
     return ok;
 }
 
-static bool pin_check_auth(omk_ctap *ct, const uint8_t *param,
+static bool pin_check_auth(const pin_exchange *exchange, const uint8_t *param,
                            size_t param_len, const uint8_t *msg,
                            size_t msg_len) {
-    return pin_check_auth2(ct, param, param_len, msg, msg_len, NULL, 0);
+    return pin_check_auth2(exchange, param, param_len, msg, msg_len, NULL, 0);
 }
 
 static bool pin_unpad(const uint8_t *buf, size_t len, size_t *out_len) {
@@ -362,7 +359,7 @@ static uint8_t sub_get_key_agreement(omk_ctap *ct) {
 }
 
 static uint8_t sub_set_pin(omk_ctap *ct, const omk_cbor_doc *doc,
-                           const omk_cbor_val *req, uint32_t protocol) {
+                           const omk_cbor_val *req, pin_exchange *exchange) {
     const omk_cbor_val *ka = omk_cbor_map_get_int(doc, req, 0x03);
     const omk_cbor_val *auth = omk_cbor_map_get_int(doc, req, 0x04);
     const omk_cbor_val *enc = omk_cbor_map_get_int(doc, req, 0x05);
@@ -379,13 +376,13 @@ static uint8_t sub_set_pin(omk_ctap *ct, const omk_cbor_doc *doc,
     if (ct->store.pin_set) {
         return OMK_CTAP2_ERR_PIN_AUTH_INVALID;
     }
-    if (!pin_derive_shared(ct, doc, protocol, ka)) {
+    if (!pin_derive_shared(ct, doc, ka, exchange)) {
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
-    if (!pin_check_auth(ct, auth->data, auth->len, enc->data, enc->len)) {
+    if (!pin_check_auth(exchange, auth->data, auth->len, enc->data, enc->len)) {
         return OMK_CTAP2_ERR_PIN_AUTH_INVALID;
     }
-    if (!omk_pin_protocol_decrypt(ct->pin.shared_aes, protocol, enc->data,
+    if (!omk_pin_protocol_decrypt(exchange->aes, exchange->protocol, enc->data,
                                    enc->len, plain, sizeof plain)) {
         status = OMK_CTAP1_ERR_INVALID_PARAMETER;
         goto done;
@@ -414,7 +411,7 @@ done:
 }
 
 static uint8_t sub_change_pin(omk_ctap *ct, const omk_cbor_doc *doc,
-                              const omk_cbor_val *req, uint32_t protocol) {
+                              const omk_cbor_val *req, pin_exchange *exchange) {
     const omk_cbor_val *ka = omk_cbor_map_get_int(doc, req, 0x03);
     const omk_cbor_val *auth = omk_cbor_map_get_int(doc, req, 0x04);
     const omk_cbor_val *enc = omk_cbor_map_get_int(doc, req, 0x05);
@@ -434,17 +431,17 @@ static uint8_t sub_change_pin(omk_ctap *ct, const omk_cbor_doc *doc,
     if (!ct->store.pin_set) {
         return OMK_CTAP2_ERR_PIN_NOT_SET;
     }
-    if (!pin_derive_shared(ct, doc, protocol, ka)) {
+    if (!pin_derive_shared(ct, doc, ka, exchange)) {
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
     /* Authenticate the concatenated ciphertext before looking at its shape.
      * Verify it incrementally so an oversized parameter is still checked
      * without a scratch buffer and then rejected as an invalid parameter. */
-    if (!pin_check_auth2(ct, auth->data, auth->len, enc->data, enc->len,
+    if (!pin_check_auth2(exchange, auth->data, auth->len, enc->data, enc->len,
                          cur->data, cur->len)) {
         return OMK_CTAP2_ERR_PIN_AUTH_INVALID;
     }
-    if (!omk_pin_protocol_decrypt(ct->pin.shared_aes, protocol, cur->data,
+    if (!omk_pin_protocol_decrypt(exchange->aes, exchange->protocol, cur->data,
                                    cur->len, current, sizeof current)) {
         status = OMK_CTAP1_ERR_INVALID_PARAMETER;
         goto done;
@@ -453,7 +450,7 @@ static uint8_t sub_change_pin(omk_ctap *ct, const omk_cbor_doc *doc,
     if (status != OMK_CTAP2_OK) {
         goto done;
     }
-    if (!omk_pin_protocol_decrypt(ct->pin.shared_aes, protocol, enc->data,
+    if (!omk_pin_protocol_decrypt(exchange->aes, exchange->protocol, enc->data,
                                    enc->len, plain, sizeof plain)) {
         status = OMK_CTAP1_ERR_INVALID_PARAMETER;
         goto done;
@@ -482,7 +479,8 @@ done:
     return status;
 }
 
-static uint8_t issue_token(omk_ctap *ct, uint8_t permissions,
+static uint8_t issue_token(omk_ctap *ct, const pin_exchange *exchange,
+                           uint8_t permissions,
                            const uint8_t *rp_id, size_t rp_id_len) {
     uint8_t token[32] = {0};
     uint8_t enc[64] = {0};
@@ -495,7 +493,7 @@ static uint8_t issue_token(omk_ctap *ct, uint8_t permissions,
     if (!ct->port->random_bytes(ct->port->ctx, token, sizeof token)) {
         goto done;
     }
-    if (!omk_pin_protocol_encrypt(ct->port, ct->pin.shared_aes, ct->pin.protocol,
+    if (!omk_pin_protocol_encrypt(ct->port, exchange->aes, exchange->protocol,
                                    token, sizeof token, enc, &enc_len)) {
         goto done;
     }
@@ -529,7 +527,7 @@ done:
 }
 
 static uint8_t sub_get_token(omk_ctap *ct, const omk_cbor_doc *doc,
-                             const omk_cbor_val *req, uint32_t protocol) {
+                             const omk_cbor_val *req, pin_exchange *exchange) {
     /* getPinToken predates the permissions/rpId parameters; a client that
      * sends them is using the wrong subcommand and must not silently get a
      * token with unintended scope. */
@@ -548,11 +546,11 @@ static uint8_t sub_get_token(omk_ctap *ct, const omk_cbor_doc *doc,
     if (!ct->store.pin_set) {
         return OMK_CTAP2_ERR_PIN_NOT_SET;
     }
-    if (!pin_derive_shared(ct, doc, protocol, ka)) {
+    if (!pin_derive_shared(ct, doc, ka, exchange)) {
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
     uint8_t plain[16] = {0};
-    if (!omk_pin_protocol_decrypt(ct->pin.shared_aes, protocol, enc->data,
+    if (!omk_pin_protocol_decrypt(exchange->aes, exchange->protocol, enc->data,
                                    enc->len, plain, sizeof plain)) {
         omk_memzero(plain, sizeof plain);
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
@@ -562,13 +560,13 @@ static uint8_t sub_get_token(omk_ctap *ct, const omk_cbor_doc *doc,
     if (status != OMK_CTAP2_OK) {
         return status;
     }
-    return issue_token(ct, OMK_PERM_MC | OMK_PERM_GA, NULL, 0);
+    return issue_token(ct, exchange, OMK_PERM_MC | OMK_PERM_GA, NULL, 0);
 }
 
 static uint8_t sub_get_token_permissions(omk_ctap *ct,
                                          const omk_cbor_doc *doc,
                                          const omk_cbor_val *req,
-                                         uint32_t protocol) {
+                                         pin_exchange *exchange) {
     const omk_cbor_val *ka = omk_cbor_map_get_int(doc, req, 0x03);
     const omk_cbor_val *enc = omk_cbor_map_get_int(doc, req, 0x06);
     const omk_cbor_val *perm = omk_cbor_map_get_int(doc, req, 0x09);
@@ -603,11 +601,11 @@ static uint8_t sub_get_token_permissions(omk_ctap *ct,
     if (!ct->store.pin_set) {
         return OMK_CTAP2_ERR_PIN_NOT_SET;
     }
-    if (!pin_derive_shared(ct, doc, protocol, ka)) {
+    if (!pin_derive_shared(ct, doc, ka, exchange)) {
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
     uint8_t plain[16] = {0};
-    if (!omk_pin_protocol_decrypt(ct->pin.shared_aes, protocol, enc->data,
+    if (!omk_pin_protocol_decrypt(exchange->aes, exchange->protocol, enc->data,
                                    enc->len, plain, sizeof plain)) {
         omk_memzero(plain, sizeof plain);
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
@@ -617,7 +615,7 @@ static uint8_t sub_get_token_permissions(omk_ctap *ct,
     if (status != OMK_CTAP2_OK) {
         return status;
     }
-    return issue_token(ct, (uint8_t)permissions, rp_id, rp_len);
+    return issue_token(ct, exchange, (uint8_t)permissions, rp_id, rp_len);
 }
 
 uint8_t omk_ctap_cmd_clientpin(omk_ctap *ct, const omk_cbor_doc *doc,
@@ -641,22 +639,33 @@ uint8_t omk_ctap_cmd_clientpin(omk_ctap *ct, const omk_cbor_doc *doc,
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
 
+    pin_exchange exchange = {.protocol = protocol};
+    uint8_t status;
     switch (subcommand) {
     case 0x01:
-        return sub_get_retries(ct);
+        status = sub_get_retries(ct);
+        break;
     case 0x02:
-        return sub_get_key_agreement(ct);
+        status = sub_get_key_agreement(ct);
+        break;
     case 0x03:
-        return sub_set_pin(ct, doc, req, protocol);
+        status = sub_set_pin(ct, doc, req, &exchange);
+        break;
     case 0x04:
-        return sub_change_pin(ct, doc, req, protocol);
+        status = sub_change_pin(ct, doc, req, &exchange);
+        break;
     case 0x05:
-        return sub_get_token(ct, doc, req, protocol);
+        status = sub_get_token(ct, doc, req, &exchange);
+        break;
     case 0x09:
-        return sub_get_token_permissions(ct, doc, req, protocol);
+        status = sub_get_token_permissions(ct, doc, req, &exchange);
+        break;
     case 0x06:
     case 0x07:
     default:
-        return OMK_CTAP2_ERR_INVALID_SUBCOMMAND;
+        status = OMK_CTAP2_ERR_INVALID_SUBCOMMAND;
+        break;
     }
+    omk_memzero(&exchange, sizeof exchange);
+    return status;
 }

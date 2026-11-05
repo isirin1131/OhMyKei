@@ -24,7 +24,7 @@ context。容器使用 UHID 与 hidraw 的设备权限，不需要 `--privileged
 - ES256/Ed25519 自认证和断言独立验签、计数器递增。
 - hmac-secret-mc 与 GetAssertion 扩展输出一致，覆盖协议 1/2 交叉使用和单盐/双盐。
 - 驻留凭据和计数器跨重新上电保留。
-- PIN 协议 1/2、设置/修改 PIN、UV、重试次数持久化。
+- PIN 协议 1/2、设置/修改 PIN、UV、重试次数持久化、协议切换及非法协商输入后的恢复。
 - 重新上电使旧 PIN token 失效。
 - CredentialManagement 枚举和删除。
 - MakeCredential 与 Selection 等待 UP 时的 Keepalive/CANCEL，以及取消后的正常请求。
@@ -147,6 +147,17 @@ python3 host/virtual/run.py official --group MakeCredentialRequest --grep 'F-9'
 最终状态与前轮一致，无漏跑/重复/必跑项跳过。ClientPin2-Policy F-2 收到一次
 `0x02` 后重试通过；仍为上述已知断言冲突，未修改官方套件或固件错误码。
 报告：`build/virtual-hid/official/session-nu4hfwxm/result.json`。
+
+2026-11-05 ClientPIN 生命周期收敛：协议号和派生 AES/HMAC 密钥改为请求局部数据，
+统一在子命令返回后擦除；长期设备状态、Reset 和密钥轮换不再保存或清理这些字段。
+增强现有 PIN 回归，覆盖协议 1/2、错误 PIN 与重启后重试次数、非法协商点后的
+正常 token 签发和 UV 验签。增强回归在原实现和修改后均通过；修改后
+**9/9 核心（14.33 秒）、14/14 HID（26.905 秒）**，报告
+`build/virtual-hid/runs/run-xbdh0tjp/result.json`。固件布局检查及子代理只读审查通过。
+官方定向 `--group ClientPin1 --group ClientPin2 --group Reset --group Extensions
+--group CredManAPI` 为 **94 通过、53 跳过、0 失败、0 重试**（357.876 秒）；147 项
+完整结束且最终状态与前轮全量对应项一致。报告 `session-qwv59l_5/result.json`；
+本轮未重跑官方全量。
 
 依赖镜像变化时，脚本停止并重命名旧专用容器后创建新容器，不删除旧容器。
 `python3 host/virtual/run.py stop` 停止当前两个专用容器。报告保留，临时合成 Flash

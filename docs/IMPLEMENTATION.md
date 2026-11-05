@@ -380,7 +380,7 @@ bumps all three.
 
 After a successful Reset the CTAP layer clears the whole live
 authorization/extension state, not just `token_valid`: PUAT bytes and flags,
-PIN shared AES/HMAC keys, GetAssertion continuation and hmac-secret salts/keys,
+GetAssertion continuation and hmac-secret salts/keys,
 CredentialManagement cursors, the per-boot PIN fault latch, and the consecutive
 PIN-failure count. A failed Reset leaves the old state and the fault latch
 intact.
@@ -472,6 +472,11 @@ A successful UP consumes the token. The key-agreement key is rotated after a
 failed PIN comparison so a platform that learned or tried to brute-force the
 old shared secret cannot keep using it; if rotation cannot obtain randomness,
 the derived shared secrets are cleared and the command fails closed.
+
+Each ClientPIN request owns its protocol number and derived AES/HMAC keys in a
+local exchange. A single dispatch exit wipes that exchange after success or
+failure. These fields are absent from long-lived authenticator state,
+so Reset and key-agreement rotation no longer manage their cleanup.
 
 Token validity is checked only on the authorization path; its tests exercise
 that same path rather than maintaining a second validity-query implementation.

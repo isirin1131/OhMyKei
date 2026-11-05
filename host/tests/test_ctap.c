@@ -4043,9 +4043,6 @@ static void test_reset_invalidates_state(void) {
     f.ct.pin.used_once = true;
     f.ct.pin.created_ms = f.ct.boot_ms;
     f.ct.pin.used_ms = f.ct.boot_ms;
-    f.ct.pin.protocol = 2;
-    memset(f.ct.pin.shared_aes, 0x22, sizeof f.ct.pin.shared_aes);
-    memset(f.ct.pin.shared_hmac, 0x33, sizeof f.ct.pin.shared_hmac);
 
     f.ct.ga.valid = true;
     f.ct.ga.next = 1;
@@ -4077,12 +4074,6 @@ static void test_reset_invalidates_state(void) {
               f.ct.pin.permissions == 0 && !f.ct.pin.rp_bound &&
               !f.ct.pin.user_verified && !f.ct.pin.used_once,
           "Reset clears PUAT bytes and flags");
-    check(f.ct.pin.protocol == 0 &&
-              all_zero_bytes(f.ct.pin.shared_aes,
-                             sizeof f.ct.pin.shared_aes) &&
-              all_zero_bytes(f.ct.pin.shared_hmac,
-                             sizeof f.ct.pin.shared_hmac),
-          "Reset clears PIN shared keys");
     check(!f.ct.ga.valid && !f.ct.ga.hmac_secret && f.ct.ga.count == 0 &&
               all_zero_bytes(f.ct.ga.hmac_salt,
                              sizeof f.ct.ga.hmac_salt) &&

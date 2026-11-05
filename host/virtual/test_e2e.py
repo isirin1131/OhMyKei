@@ -194,16 +194,41 @@ class VirtualHidTests(unittest.TestCase):
 
     def test_pin_retry_persists(self):
         pin = secrets.token_hex(4)
-        client = ClientPin(self.ctap, PinProtocolV2())
-        client.set_pin(pin)
-        self.expect_error(CtapError.ERR.PIN_INVALID,
-                          lambda: client.get_pin_token(pin + "x"))
-        self.assertEqual(client.get_pin_retries()[0], 7)
-        self.powercycle()
-        client = ClientPin(self.ctap, PinProtocolV2())
-        self.assertEqual(client.get_pin_retries()[0], 7)
-        client.get_pin_token(pin)
-        self.assertEqual(client.get_pin_retries()[0], 8)
+        ClientPin(self.ctap, PinProtocolV2()).set_pin(pin)
+        # Each request owns its exchange, including after protocol switches,
+        # key rotation on a wrong PIN, and rejected key-agreement input.
+        for protocol in (PinProtocolV1(), PinProtocolV2()):
+            with self.subTest(protocol=protocol.VERSION):
+                client = ClientPin(self.ctap, protocol)
+                self.expect_error(CtapError.ERR.PIN_INVALID,
+                                  lambda: client.get_pin_token(pin + "x"))
+                self.assertEqual(client.get_pin_retries()[0], 7)
+                self.powercycle()
+                client = ClientPin(self.ctap, protocol)
+                self.assertEqual(client.get_pin_retries()[0], 7)
+                client.get_pin_token(pin)
+                self.assertEqual(client.get_pin_retries()[0], 8)
+
+                invalid_key = {1: 2, 3: -25, -1: 1, -2: bytes(32), -3: bytes(32)}
+                self.expect_error(CtapError.ERR.INVALID_PARAMETER,
+                                  lambda: self.ctap.client_pin(
+                                      protocol.VERSION, ClientPin.CMD.GET_TOKEN_USING_PIN_LEGACY,
+                                      key_agreement=invalid_key,
+                                      pin_hash_enc=bytes(16 if protocol.VERSION == 1 else 32),
+                                  ))
+                self.assertEqual(client.get_pin_retries()[0], 8)
+                token = client.get_pin_token(
+                    pin, ClientPin.PERMISSION.MAKE_CREDENTIAL, RP["id"]
+                )
+                challenge = os.urandom(32)
+                response = self.ctap.make_credential(
+                    challenge, RP, {"id": os.urandom(16)},
+                    [{"type": "public-key", "alg": -7}],
+                    pin_uv_param=protocol.authenticate(token, challenge),
+                    pin_uv_protocol=protocol.VERSION,
+                )
+                self.assertTrue(response.auth_data.is_user_verified())
+                PackedAttestation().verify(response.att_stmt, response.auth_data, challenge)
 
     def test_cancel_while_waiting_for_presence(self):
         self.rpc("/control/mode", {"auto_touch_ms": None})

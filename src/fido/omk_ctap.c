@@ -113,12 +113,6 @@ void omk_ctap_cm_clear(omk_ctap *ct) {
     omk_memzero(&ct->cm, sizeof ct->cm);
 }
 
-void omk_ctap_pin_shared_clear(omk_ctap *ct) {
-    omk_memzero(ct->pin.shared_aes, sizeof ct->pin.shared_aes);
-    omk_memzero(ct->pin.shared_hmac, sizeof ct->pin.shared_hmac);
-    ct->pin.protocol = 0;
-}
-
 size_t omk_ctap_build_cose_key(uint8_t *out, size_t cap, uint8_t alg,
                                const uint8_t pub[65]) {
     omk_cbor_enc e;
@@ -302,7 +296,6 @@ static uint8_t cmd_reset(omk_ctap *ct) {
      * hmac-secret key must not survive into the fresh store. */
     ct->pin_store_fault = false;
     omk_ctap_puat_invalidate(ct);
-    omk_ctap_pin_shared_clear(ct);
     omk_ctap_ga_clear(ct);
     omk_ctap_cm_clear(ct);
     ct->consecutive_pin_failures = 0;

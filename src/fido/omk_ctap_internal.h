@@ -20,7 +20,6 @@ uint8_t omk_ctap_store_error(const omk_ctap *ct, int store_rc);
 /* Full live-state invalidation, including seeds/salts/enumeration cursors. */
 void omk_ctap_ga_clear(omk_ctap *ct);
 void omk_ctap_cm_clear(omk_ctap *ct);
-void omk_ctap_pin_shared_clear(omk_ctap *ct);
 
 bool omk_ctap_val_uint(const omk_cbor_val *v, uint32_t *out);
 bool omk_ctap_val_bytes(const omk_cbor_val *v, const uint8_t **data,

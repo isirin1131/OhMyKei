@@ -106,10 +106,6 @@ typedef struct {
     bool valid;
     uint8_t key_priv[32];
     uint8_t key_pub[65];
-    uint8_t shared_aes[32];
-    uint8_t shared_hmac[32];
-    uint8_t protocol;
-
     uint8_t token[32];
     bool token_valid;
     uint8_t permissions;
