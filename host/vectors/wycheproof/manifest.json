@@ -1,0 +1,12 @@
+{
+  "upstream": "https://github.com/C2SP/wycheproof",
+  "commit": "d17cc89fa5c8f4f4d378b5385ebf75da5d0926c9",
+  "files": {
+    "ecdh_secp256r1_ecpoint_test.json": "648f16d077caf2400d02331ca51f44744c72c799830c8d0595d0b18b6dd9f886",
+    "ecdsa_secp256r1_sha256_p1363_test.json": "c60de693930e386c3a5472d08081623ef8504decc54b38ac01ec6b2a2575c986",
+    "ed25519_test.json": "ea80ffebac085e21cb9d3e903e7fa2b448d96702da5b31f061d0b83b430b74b3",
+    "hmac_sha256_test.json": "2d201cfa61d1bf95e6f5d07d96634b4a348b31e8eaa277ad7c8d09677b7a743f",
+    "hkdf_sha256_test.json": "bb2b462a38b251cb52a2aede706d6d4b62b26864f4e80c95497507ddb07c5f1e",
+    "LICENSE": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+  }
+}

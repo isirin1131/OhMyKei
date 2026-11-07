@@ -1,0 +1,84 @@
+{
+  "source": "NIST CAVP public test vectors; not a CAVP validation",
+  "archives": {
+    "aes/KAT_AES.zip": {
+      "url": "https://csrc.nist.gov/CSRC/media/Projects/Cryptographic-Algorithm-Validation-Program/documents/aes/KAT_AES.zip",
+      "sha256": "a203b16c9246b2ebae31dee5de21a606be80cf78ceabaca37150236fa098eb60"
+    },
+    "aes/aesmmt.zip": {
+      "url": "https://csrc.nist.gov/CSRC/media/Projects/Cryptographic-Algorithm-Validation-Program/documents/aes/aesmmt.zip",
+      "sha256": "12d1616f7a713e807714055973f04efc402f46a14e3d81869717c7ace4ecbaf0"
+    },
+    "shs/shabytetestvectors.zip": {
+      "url": "https://csrc.nist.gov/CSRC/media/Projects/Cryptographic-Algorithm-Validation-Program/documents/shs/shabytetestvectors.zip",
+      "sha256": "929ef80b7b3418aca026643f6f248815913b60e01741a44bba9e118067f4c9b8"
+    }
+  },
+  "files": {
+    "CBCGFSbox256.rsp": {
+      "sha256": "57d86961e3e2bf421d7fedbad66615a661c6b43155035d22c9df11fb1e1d2a97",
+      "archive": "aes/KAT_AES.zip",
+      "member": "CBCGFSbox256.rsp"
+    },
+    "CBCKeySbox256.rsp": {
+      "sha256": "2442e95008edd37e85667f3b8500225786f0cf7ad79478d1d994ad901f6c3389",
+      "archive": "aes/KAT_AES.zip",
+      "member": "CBCKeySbox256.rsp"
+    },
+    "CBCVarKey256.rsp": {
+      "sha256": "dc0cb380169f43a83c4aff86eeb146d5861a7e0247908106f8b6fd37902e97f8",
+      "archive": "aes/KAT_AES.zip",
+      "member": "CBCVarKey256.rsp"
+    },
+    "CBCVarTxt256.rsp": {
+      "sha256": "13c5b086c64c816e43ffc657b602cfe6a7231bea8297ebc9a96b0932d351f155",
+      "archive": "aes/KAT_AES.zip",
+      "member": "CBCVarTxt256.rsp"
+    },
+    "ECBGFSbox256.rsp": {
+      "sha256": "6b0800d4d666d57abaaa4ede64c9dbdbf5ab2239a13adcac5ce516516dedf526",
+      "archive": "aes/KAT_AES.zip",
+      "member": "ECBGFSbox256.rsp"
+    },
+    "ECBKeySbox256.rsp": {
+      "sha256": "010a648bfc725f0ea2bd6e9892c88498cd71d805bac84c3f93199e1d919aba03",
+      "archive": "aes/KAT_AES.zip",
+      "member": "ECBKeySbox256.rsp"
+    },
+    "ECBVarKey256.rsp": {
+      "sha256": "41026476e854b2e941804726300da7222c5f7ee5b28490a1e52c4ebfbb9dfc11",
+      "archive": "aes/KAT_AES.zip",
+      "member": "ECBVarKey256.rsp"
+    },
+    "ECBVarTxt256.rsp": {
+      "sha256": "0be3b50f6b3e28e34e16f72d1acbcea4e3c240d725a32b30917b9e560e8ef24e",
+      "archive": "aes/KAT_AES.zip",
+      "member": "ECBVarTxt256.rsp"
+    },
+    "CBCMMT256.rsp": {
+      "sha256": "bdf4379ac9419d2e1e8cb20568611aa444e1f2b4ef7d3b9438afa436a97004b7",
+      "archive": "aes/aesmmt.zip",
+      "member": "CBCMMT256.rsp"
+    },
+    "ECBMMT256.rsp": {
+      "sha256": "4fbbb291692101bcf4c2cf85762388824881f5712318151e2b4af275eb081748",
+      "archive": "aes/aesmmt.zip",
+      "member": "ECBMMT256.rsp"
+    },
+    "SHA256LongMsg.rsp": {
+      "sha256": "6fac36f37360bcf74ffcf4465c18e30d6d5a04cc90885b901fc3130c16060974",
+      "archive": "shs/shabytetestvectors.zip",
+      "member": "shabytetestvectors/SHA256LongMsg.rsp"
+    },
+    "SHA256Monte.rsp": {
+      "sha256": "29ea30c6bb4b84e425fb8c1d731c6bb852dac935825f2bd1143e5d3c4f10bfb9",
+      "archive": "shs/shabytetestvectors.zip",
+      "member": "shabytetestvectors/SHA256Monte.rsp"
+    },
+    "SHA256ShortMsg.rsp": {
+      "sha256": "75e1cb83994638481808e225b9eb0c1ebd0c232d952ac42b61abce6363be283c",
+      "archive": "shs/shabytetestvectors.zip",
+      "member": "shabytetestvectors/SHA256ShortMsg.rsp"
+    }
+  }
+}

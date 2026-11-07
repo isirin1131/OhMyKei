@@ -35,24 +35,22 @@ Implemented:
 - `hmac-secret` (32/64-byte salts, `age`/PRF use), `hmac-secret-mc`,
   `credProtect`, CredentialManagement enumeration/delete/update using
   `PublicKeyCredentialDescriptor` maps for credential identifiers.
-- Host tests (12 registered CTest entries under ASan + non-recoverable UBSan)
+- Host tests (14 registered CTest entries under ASan + non-recoverable UBSan)
   and libFuzzer harnesses for CBOR and CTAPHID.
 
 Not implemented yet (kept out of `getInfo`): `authenticatorConfig`,
 `credBlob`, `largeBlobs`, U2F/CTAP1, built-in UV/biometrics, `alwaysUv`, and
 the second-batch `minPinLength` policy hooks.
 
-> **Verification state (2026-11-04):** the host build with AddressSanitizer
-> and non-recoverable UndefinedBehaviorSanitizer passed all nine executable
-> tests after the CTAP/PIN cleanup. Three build probes passed earlier in the
-> protocol-fix pass using isolated temporary copies with destructive cleanup
-> omitted; they were not rerun for this cleanup. See [audit evidence](docs/audit-plan.md#55-2026-11-04-ctappin-过度防御清理).
-> This result does **not** include a libFuzzer run. A Release
-> firmware build passes the committed `layout-check` target (32 KiB stack and
-> image placed below the upper 1 MiB store). The firmware has **not** been run against the FIDO
-> Alliance conformance suite on physical hardware, and there has been **no
-> physical power-cut test**. Treat this as a development build, not a
-> certified authenticator.
+> **Verification state (2026-11-06):** the standard Debug host build passes
+> all 14 CTest entries with ASan and non-recoverable UBSan. The public crypto
+> regression executes 958 Wycheproof cases and 1,889 NIST cases; Linux HID
+> end-to-end regression passes 14/14. The Release firmware passes `layout-check`
+> (32 KiB stack and image below the upper 1 MiB store). This iteration did not
+> rerun libFuzzer or the full official FIDO suite. Physical side-channel and
+> power-cut testing remain outside these results. See [crypto regression](docs/crypto-testing.md)
+> and [automation evidence](docs/automation.md); this is a development build,
+> not a certified authenticator.
 
 The CTAP/PIN cleanup removes duplicate curve and post-decryption length
 checks, unused state flags and the duplicate token-validity query. Extension
@@ -144,7 +142,7 @@ For automated end-to-end testing without a board, with Colima already running:
 python3 host/virtual/run.py test
 ```
 
-This builds the real core with ASan/UBSan, runs the nine executable host tests,
+This builds the real core with ASan/UBSan, runs eleven core regression entries (including public crypto vectors),
 then runs fourteen `python-fido2` tests through Linux hidraw/UHID. It verifies ES256
 and Ed25519 signatures, PIN protocols, credential management, persistence,
 cancellation, request validation, credProtect policies, hmac-secret output across
@@ -167,16 +165,22 @@ cmake --build --preset host
 ctest --preset host
 ```
 
-With the default `OMK_SANITIZE=ON`, the host configuration registers **12
+With the default `OMK_SANITIZE=ON`, the host configuration registers **14
 CTest entries**: eight unit/regression executables (`test_build_smoke`,
 `test_crypto`, `test_cbor`, `test_ctaphid`, `test_p256`,
 `test_crypto_ed25519`, `test_ctap`, `test_store`), the CTAPHID fuzz-replay
-regression, the non-recoverable-UBSan probe, the firmware-version definition
+regression, the Wycheproof and NIST vector drivers, the non-recoverable-UBSan probe, the firmware-version definition
 probe, and the core SanitizerCoverage check. The unit tests cover
 known-answer crypto vectors, CBOR strictness, CTAPHID state machines, CTAP
 workflows, and a NOR-like flash model with power-cut injection at individual
 read/write/erase operations. With sanitizers disabled the UBSan probe is not
-registered (11 entries).
+registered (13 entries).
+
+The host vector drivers require Python 3 and run offline against pinned data.
+They exercise 958 applicable Wycheproof cases and 1,889 NIST CAVP cases;
+129 Wycheproof cases outside the fixed-width/full-MAC API are reported separately.
+Our implementation and harness remain MIT; Wycheproof data retains Apache-2.0.
+See [crypto regression](docs/crypto-testing.md) for policies, commands, and limits.
 
 The CBOR and CTAPHID harnesses use libFuzzer (a smoke target is kept for
 toolchain checks):

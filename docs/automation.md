@@ -18,7 +18,7 @@ python3 host/virtual/run.py test
 
 专用容器名为 `ohmykei-virtual`。脚本显式使用默认 Colima socket，不修改 Docker
 context。容器使用 UHID 与 hidraw 的设备权限，不需要 `--privileged`。
-编译与运行均启用 ASan 和非恢复 UBSan。九项核心测试通过后，运行十四项 HID 回归：
+编译与运行均启用 ASan 和非恢复 UBSan。十一项核心回归（含 Wycheproof/NIST 向量）通过后，运行十四项 HID 回归：
 
 - GetInfo、INIT 和 1500 字节 PING 分片。
 - ES256/Ed25519 自认证和断言独立验签、计数器递增。
@@ -37,6 +37,12 @@ context。容器使用 UHID 与 hidraw 的设备权限，不需要 `--privileged
 每项测试使用独立的合成 Flash 文件，每轮报告写入
 `build/virtual-hid/runs/run-*/result.json`。不会读取真机或真实凭据。
 首次验证：九项核心测试 14.91 秒；十项 HID 回归 18.28 秒。下载/构建耗时另计。
+
+2026-11-06 密码学回归扩展：主机 Debug + ASan/UBSan **14/14**，Linux 核心
+**11/11**（23.69 秒）、HID **14/14**（26.061 秒）；HID 报告为
+`build/virtual-hid/runs/run-tbry_pwo/result.json`。公开向量涵盖 958 项 Wycheproof
+和 1,889 项 NIST，详情见 [密码学回归](crypto-testing.md)。HKDF 超限输出由静默
+截断改为返回失败且不写输出；固件布局检查通过。此轮未重跑官方全量套件。
 
 ## 持续运行虚拟设备
 

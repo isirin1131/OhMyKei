@@ -16,6 +16,8 @@ set(OMK_TEST_ENV
     "UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_stacktrace=1"
     "ASAN_OPTIONS=detect_leaks=0:abort_on_error=1")
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
 omk_enable_reproducible_prefix_maps()
 
 # Protocol/crypto core shared with the firmware build.
@@ -62,6 +64,26 @@ omk_host_test(test_p256)
 omk_host_test(test_crypto_ed25519)
 omk_host_test(test_ctap)
 omk_host_test(test_store)
+
+add_executable(crypto_vector_bridge tests/crypto_vector_bridge.c)
+target_link_libraries(crypto_vector_bridge PRIVATE omk_core)
+target_compile_options(crypto_vector_bridge PRIVATE -std=c17 ${OMK_WARNINGS})
+if(OMK_SANITIZE)
+    target_compile_options(crypto_vector_bridge PRIVATE ${OMK_SAN_FLAGS})
+    target_link_options(crypto_vector_bridge PRIVATE ${OMK_SAN_LINK_FLAGS})
+endif()
+add_test(NAME test_crypto_wycheproof
+    COMMAND ${CMAKE_COMMAND} -E env PYTHONUNBUFFERED=1
+        ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_crypto_wycheproof.py
+        $<TARGET_FILE:crypto_vector_bridge>
+        ${CMAKE_CURRENT_SOURCE_DIR}/vectors/wycheproof)
+set_tests_properties(test_crypto_wycheproof PROPERTIES
+    ENVIRONMENT "${OMK_TEST_ENV}" TIMEOUT 600)
+add_test(NAME test_crypto_nist
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_crypto_nist.py
+        $<TARGET_FILE:crypto_vector_bridge> ${CMAKE_CURRENT_SOURCE_DIR}/vectors/nist)
+set_tests_properties(test_crypto_nist PROPERTIES
+    ENVIRONMENT "${OMK_TEST_ENV}" TIMEOUT 600)
 
 # Replay regression for the CTAPHID fuzz harness: the same inputs must produce
 # byte-identical packet capture even when interleaved with other inputs in a

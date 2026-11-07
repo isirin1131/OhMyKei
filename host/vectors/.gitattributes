@@ -1,0 +1,4 @@
+# Preserve upstream bytes: manifests verify SHA-256 after checkout.
+wycheproof/*_test.json -text -diff
+wycheproof/LICENSE -text
+nist/*.rsp -text -diff
