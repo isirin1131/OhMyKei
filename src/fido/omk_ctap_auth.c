@@ -137,6 +137,9 @@ static uint8_t ext_parse_request(omk_ctap *ct, const omk_cbor_doc *doc,
                                  const omk_cbor_val *ext, uint8_t *salt,
                                  size_t salt_cap, size_t *salt_len,
                                  uint8_t aes[32], uint32_t *protocol) {
+    if (ext->type != OMK_CBOR_MAP) {
+        return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
+    }
     const omk_cbor_val *ka = omk_cbor_map_get_int(doc, ext, 0x01);
     const omk_cbor_val *salt_enc = omk_cbor_map_get_int(doc, ext, 0x02);
     const omk_cbor_val *salt_auth = omk_cbor_map_get_int(doc, ext, 0x03);
@@ -277,6 +280,35 @@ static uint8_t parse_options(const omk_cbor_doc *doc, const omk_cbor_val *opt,
         *slots[i] = v->boolean;
     }
     return OMK_CTAP2_OK;
+}
+
+/* MC and GA share PIN authentication and the zero-length probe. Their
+ * policies for an absent parameter remain in the command handlers. */
+static uint8_t authorize_auth_request(omk_ctap *ct,
+                                      const omk_cbor_val *param,
+                                      const omk_cbor_val *protocolv,
+                                      const uint8_t client_data_hash[32],
+                                      uint8_t permission,
+                                      const uint8_t rp_hash[32], bool *uv) {
+    if (protocolv == NULL) {
+        return OMK_CTAP2_ERR_MISSING_PARAMETER;
+    }
+    uint32_t protocol = 0;
+    if (!omk_ctap_val_uint(protocolv, &protocol)) {
+        return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
+    }
+    uint8_t status = omk_ctap_authorize_raw(
+        ct, param, protocol, client_data_hash, 32, permission, rp_hash, uv);
+    if (status != OMK_CTAP_PIN_PROBE) {
+        return status;
+    }
+    status = omk_ctap_wait_up(ct);
+    if (status != OMK_CTAP2_OK) {
+        return status;
+    }
+    omk_ctap_consume_up(ct);
+    return ct->store.pin_set ? OMK_CTAP2_ERR_PIN_INVALID
+                             : OMK_CTAP2_ERR_PIN_NOT_SET;
 }
 
 static uint8_t parse_cred_protect(const omk_cbor_doc *doc,
@@ -559,6 +591,28 @@ uint8_t omk_ctap_cmd_makecredential(omk_ctap *ct, const omk_cbor_doc *doc,
     if (omk_cbor_map_get_int(doc, req, 0x0A) != NULL) {
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
+    bool want_attestation = true;
+    const omk_cbor_val *pref = omk_cbor_map_get_int(doc, req, 0x0B);
+    if (pref != NULL) {
+        if (pref->type != OMK_CBOR_ARRAY) {
+            return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
+        }
+        want_attestation = false;
+        for (uint16_t i = 0; i < pref->count; i++) {
+            const omk_cbor_val *f = omk_cbor_array_get(doc, pref, i);
+            if (f == NULL || f->type != OMK_CBOR_TEXT) {
+                continue;
+            }
+            if (f->len == 6 && memcmp(f->data, "packed", 6) == 0) {
+                want_attestation = true;
+                break;
+            }
+            if (f->len == 4 && memcmp(f->data, "none", 4) == 0) {
+                break;
+            }
+        }
+    }
+
     uint8_t rp_hash[32];
     omk_sha256(rp_id, rp_id_len, rp_hash);
 
@@ -587,64 +641,15 @@ uint8_t omk_ctap_cmd_makecredential(omk_ctap *ct, const omk_cbor_doc *doc,
     bool token_uv = false;
     const omk_cbor_val *pin_param = omk_cbor_map_get_int(doc, req, 0x08);
     if (pin_param != NULL) {
-        uint32_t pin_protocol = 0;
-        const omk_cbor_val *ppv = omk_cbor_map_get_int(doc, req, 0x09);
-        if (ppv == NULL) {
-            return OMK_CTAP2_ERR_MISSING_PARAMETER;
-        }
-        if (!omk_ctap_val_uint(ppv, &pin_protocol)) {
-            return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
-        }
-        status = omk_ctap_authorize_raw(ct, pin_param, pin_protocol,
-                                        client_data_hash, 32, OMK_PERM_MC,
-                                        rp_hash, &token_uv);
-        if (status == OMK_CTAP_PIN_PROBE) {
-            const uint8_t up_status = omk_ctap_wait_up(ct);
-            if (up_status == OMK_CTAP_ABORTED) {
-                return OMK_CTAP_ABORTED;
-            }
-            if (up_status != OMK_CTAP2_OK) {
-                return up_status;
-            }
-            omk_ctap_consume_up(ct);
-            return ct->store.pin_set ? OMK_CTAP2_ERR_PIN_INVALID
-                                     : OMK_CTAP2_ERR_PIN_NOT_SET;
-        }
+        status = authorize_auth_request(
+            ct, pin_param, omk_cbor_map_get_int(doc, req, 0x09),
+            client_data_hash, OMK_PERM_MC, rp_hash, &token_uv);
         if (status != OMK_CTAP2_OK) {
             return status;
         }
     } else if (ct->store.pin_set && rk) {
         return OMK_CTAP2_ERR_PIN_REQUIRED;
     }
-
-    if (excluded(ct, doc, exclude, rp_hash, token_uv)) {
-        const uint8_t up_status = omk_ctap_wait_up(ct);
-        if (up_status == OMK_CTAP_ABORTED) {
-            return OMK_CTAP_ABORTED;
-        }
-        /* The exclusion decision is already final; a missing touch must not
-         * turn it into a user-action timeout. */
-        if (up_status == OMK_CTAP2_ERR_USER_ACTION_TIMEOUT) {
-            return OMK_CTAP2_ERR_CREDENTIAL_EXCLUDED;
-        }
-        if (up_status != OMK_CTAP2_OK) {
-            return up_status;
-        }
-        omk_ctap_consume_up(ct);
-        return OMK_CTAP2_ERR_CREDENTIAL_EXCLUDED;
-    }
-
-    {
-        const uint8_t up_status = omk_ctap_wait_up(ct);
-        if (up_status == OMK_CTAP_ABORTED) {
-            return OMK_CTAP_ABORTED;
-        }
-        if (up_status != OMK_CTAP2_OK) {
-            return up_status;
-        }
-    }
-    omk_ctap_consume_up(ct);
-    const bool uv_done = token_uv;
 
     uint8_t seed[32] = {0};
     uint8_t pub[65] = {0};
@@ -657,6 +662,39 @@ uint8_t omk_ctap_cmd_makecredential(omk_ctap *ct, const omk_cbor_doc *doc,
     uint8_t hs_out[64] = {0};
     uint8_t ext_data[200] = {0};
     size_t ext_len = 0;
+
+    size_t salt_len = 0;
+    uint32_t protocol = 1;
+    /* Validate and decrypt the extension before UP or credential generation.
+     * All exits below erase the request-local plaintext and derived key. */
+    if (mc_ext != NULL) {
+        status = ext_parse_request(ct, doc, mc_ext, hmac_salt,
+                                   sizeof hmac_salt, &salt_len, hmac_aes,
+                                   &protocol);
+        if (status != OMK_CTAP2_OK) {
+            goto done;
+        }
+    }
+
+    if (excluded(ct, doc, exclude, rp_hash, token_uv)) {
+        status = omk_ctap_wait_up(ct);
+        /* The exclusion decision is already final; a missing touch must not
+         * turn it into a user-action timeout. */
+        if (status == OMK_CTAP2_OK) {
+            omk_ctap_consume_up(ct);
+            status = OMK_CTAP2_ERR_CREDENTIAL_EXCLUDED;
+        } else if (status == OMK_CTAP2_ERR_USER_ACTION_TIMEOUT) {
+            status = OMK_CTAP2_ERR_CREDENTIAL_EXCLUDED;
+        }
+        goto done;
+    }
+
+    status = omk_ctap_wait_up(ct);
+    if (status != OMK_CTAP2_OK) {
+        goto done;
+    }
+    omk_ctap_consume_up(ct);
+    const bool uv_done = token_uv;
 
     if (alg == OMK_ALG_ES256) {
         omk_p256_keypair kp;
@@ -688,14 +726,6 @@ uint8_t omk_ctap_cmd_makecredential(omk_ctap *ct, const omk_cbor_doc *doc,
     }
 
     if (mc_ext != NULL) {
-        size_t salt_len = 0;
-        uint32_t protocol = 1;
-        status = ext_parse_request(ct, doc, mc_ext, hmac_salt,
-                                   sizeof hmac_salt, &salt_len, hmac_aes,
-                                   &protocol);
-        if (status != OMK_CTAP2_OK) {
-            goto done;
-        }
         size_t hs_len = 0;
         if (!omk_ctap_hmac_secret_output(seed, uv_done, hmac_salt,
                                          salt_len, hs_out, &hs_len)) {
@@ -741,29 +771,6 @@ uint8_t omk_ctap_cmd_makecredential(omk_ctap *ct, const omk_cbor_doc *doc,
     if (auth_len == 0) {
         status = OMK_CTAP2_ERR_REQUEST_TOO_LARGE;
         goto done;
-    }
-
-    bool want_attestation = true;
-    const omk_cbor_val *pref = omk_cbor_map_get_int(doc, req, 0x0B);
-    if (pref != NULL) {
-        if (pref->type != OMK_CBOR_ARRAY) {
-            status = OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
-            goto done;
-        }
-        want_attestation = false;
-        for (uint16_t i = 0; i < pref->count; i++) {
-            const omk_cbor_val *f = omk_cbor_array_get(doc, pref, i);
-            if (f == NULL || f->type != OMK_CBOR_TEXT) {
-                continue;
-            }
-            if (f->len == 6 && memcmp(f->data, "packed", 6) == 0) {
-                want_attestation = true;
-                break;
-            }
-            if (f->len == 4 && memcmp(f->data, "none", 4) == 0) {
-                break;
-            }
-        }
     }
 
     if (rk) {
@@ -914,17 +921,11 @@ static uint8_t emit_assertion(omk_ctap *ct, const match_t *m,
     }
 
     uint8_t ad[512];
-    size_t ad_len = 0;
-    memcpy(ad + ad_len, rp_hash, 32);
-    ad_len += 32;
-    ad[ad_len++] = flags;
-    ad[ad_len++] = (uint8_t)(counter >> 24);
-    ad[ad_len++] = (uint8_t)(counter >> 16);
-    ad[ad_len++] = (uint8_t)(counter >> 8);
-    ad[ad_len++] = (uint8_t)counter;
-    if (ext_len != 0) {
-        memcpy(ad + ad_len, ext_data, ext_len);
-        ad_len += ext_len;
+    const size_t ad_len = omk_ctap_build_auth_data(
+        ct, ad, sizeof ad, rp_hash, flags, counter, m->alg, NULL, 0, NULL,
+        ext_data, ext_len);
+    if (ad_len == 0) {
+        return OMK_CTAP2_ERR_REQUEST_TOO_LARGE;
     }
 
     uint8_t sign_input[640];
@@ -1073,9 +1074,6 @@ static uint8_t parse_hmac_extension(omk_ctap *ct, const omk_cbor_doc *doc,
     if (!up) {
         return OMK_CTAP2_ERR_UNSUPPORTED_OPTION;
     }
-    if (hs->type != OMK_CBOR_MAP) {
-        return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
-    }
     uint32_t protocol = 1;
     const uint8_t status = ext_parse_request(
         ct, doc, hs, ct->ga.hmac_salt, sizeof ct->ga.hmac_salt,
@@ -1143,29 +1141,9 @@ uint8_t omk_ctap_cmd_getassertion(omk_ctap *ct, const omk_cbor_doc *doc,
     bool uv = false;
     const omk_cbor_val *pin_param = omk_cbor_map_get_int(doc, req, 0x06);
     if (pin_param != NULL) {
-        uint32_t pin_protocol = 0;
-        const omk_cbor_val *ppv = omk_cbor_map_get_int(doc, req, 0x07);
-        if (ppv == NULL) {
-            return OMK_CTAP2_ERR_MISSING_PARAMETER;
-        }
-        if (!omk_ctap_val_uint(ppv, &pin_protocol)) {
-            return OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
-        }
-        status = omk_ctap_authorize_raw(ct, pin_param, pin_protocol,
-                                        client_data_hash, 32, OMK_PERM_GA,
-                                        rp_hash, &uv);
-        if (status == OMK_CTAP_PIN_PROBE) {
-            const uint8_t up_status = omk_ctap_wait_up(ct);
-            if (up_status == OMK_CTAP_ABORTED) {
-                return OMK_CTAP_ABORTED;
-            }
-            if (up_status != OMK_CTAP2_OK) {
-                return up_status;
-            }
-            omk_ctap_consume_up(ct);
-            return ct->store.pin_set ? OMK_CTAP2_ERR_PIN_INVALID
-                                     : OMK_CTAP2_ERR_PIN_NOT_SET;
-        }
+        status = authorize_auth_request(
+            ct, pin_param, omk_cbor_map_get_int(doc, req, 0x07),
+            client_data_hash, OMK_PERM_GA, rp_hash, &uv);
         if (status != OMK_CTAP2_OK) {
             return status;
         }

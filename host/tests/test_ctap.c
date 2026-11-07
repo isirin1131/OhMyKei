@@ -969,6 +969,8 @@ static void test_pin_utf8(fixture *f);
 static void test_cm_rp_bound_enumeration(fixture *f);
 static void test_getassertion_no_credentials(fixture *f);
 static void test_hmac_mc_dependency(fixture *f);
+static void test_makecredential_early_validation(fixture *f);
+static void test_auth_pin_probe(fixture *f);
 static void test_exclude_timeout(fixture *f);
 static void test_update_user_immutable(fixture *f);
 static void test_pubkey_params(fixture *f);
@@ -1013,6 +1015,8 @@ int main(void) {
     test_cm_rp_bound_enumeration(&f);
     test_getassertion_no_credentials(&f);
     test_hmac_mc_dependency(&f);
+    test_makecredential_early_validation(&f);
+    test_auth_pin_probe(&f);
     test_exclude_timeout(&f);
     test_update_user_immutable(&f);
     test_pubkey_params(&f);
@@ -3176,6 +3180,100 @@ static void test_hmac_mc_dependency(fixture *f) {
           "hmac-mc: hmac-secret false is MISSING_PARAMETER");
     check(f->ct.store.cred_count == 0,
           "hmac-mc: false dependency creates no credential");
+}
+
+static void test_makecredential_early_validation(fixture *f) {
+    const uint8_t expected[] = {
+        OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE,
+        OMK_CTAP2_ERR_MISSING_PARAMETER,
+        OMK_CTAP2_ERR_CBOR_UNEXPECTED_TYPE,
+    };
+    for (size_t kind = 0; kind < sizeof expected; kind++) {
+        for (unsigned touch = 0; touch < 2; touch++) {
+            fixture_init(f);
+            uint8_t cdh[32] = {0}, uid[1] = {1};
+            uint8_t body[512], resp[512];
+            size_t body_len;
+            if (kind == 0) {
+                body_len = build_mc(body, sizeof body, cdh, "validation.test",
+                                    uid, sizeof uid, true, false, false);
+                body[0]++; /* add 0x0B: integer instead of format array */
+                body[body_len++] = 0x0B;
+                body[body_len++] = 0x00;
+            } else {
+                body_len = build_mc_hmac_mc_only(
+                    body, sizeof body, cdh, "validation.test", uid,
+                    sizeof uid, true, true);
+                if (kind == 2) {
+                    body[body_len - 1] = 0x00; /* integer instead of map */
+                }
+            }
+            f->env.auto_up = touch != 0;
+            /* Count RNG calls without making any expected call fail. */
+            f->env.random_fail_at = 1000;
+            const uint64_t before = f->env.now;
+            const uint32_t counter = f->ct.store.counter;
+            size_t len = 0;
+            const uint8_t status = send_cmd(f, 0x01, body, body_len,
+                                            resp, sizeof resp, &len);
+            check(status == expected[kind],
+                  "MC validation: field error wins over UP timeout");
+            check(f->env.now == before,
+                  "MC validation: malformed request does not wait for UP");
+            check(f->env.random_calls == 0,
+                  "MC validation: malformed request uses no RNG");
+            check(f->ct.store.counter == counter &&
+                      f->ct.store.cred_count == 0 && len == 0,
+                  "MC validation: malformed request consumes no counter or credential");
+        }
+    }
+}
+
+static void test_auth_pin_probe(fixture *f) {
+    for (unsigned pin_set = 0; pin_set < 2; pin_set++) {
+        fixture_init(f);
+        if (pin_set) {
+            pin_client pc;
+            pin_set_1234(f, &pc, 2);
+        }
+        for (uint8_t cmd = 1; cmd <= 2; cmd++) {
+            for (uint8_t protocol = 1; protocol <= 2; protocol++) {
+                uint8_t cdh[32] = {0}, uid[1] = {1};
+                uint8_t body[512], resp[512];
+                omk_cbor_enc e;
+                omk_cbor_enc_init(&e, body, sizeof body);
+                if (cmd == 1) {
+                    e.len = build_mc(body, sizeof body, cdh, "probe.test",
+                                     uid, sizeof uid, false, false, false);
+                    body[0] += 2;
+                } else {
+                    omk_cbor_put_map(&e, 4);
+                    omk_cbor_put_uint(&e, 1);
+                    omk_cbor_put_text(&e, "probe.test", 10);
+                    omk_cbor_put_uint(&e, 2);
+                    omk_cbor_put_bytes(&e, cdh, sizeof cdh);
+                }
+                omk_cbor_put_uint(&e, cmd == 1 ? 8 : 6);
+                omk_cbor_put_bytes(&e, NULL, 0);
+                omk_cbor_put_uint(&e, cmd == 1 ? 9 : 7);
+                omk_cbor_put_uint(&e, protocol);
+                check(!e.overflow, "PIN probe request encoding");
+                const uint32_t counter = f->ct.store.counter;
+                const uint64_t before = f->env.now;
+                size_t len = 0;
+                const uint8_t status = send_cmd(f, cmd, body, e.len,
+                                                resp, sizeof resp, &len);
+                check(status == (pin_set ? OMK_CTAP2_ERR_PIN_INVALID
+                                        : OMK_CTAP2_ERR_PIN_NOT_SET),
+                      "MC/GA PIN probe reports PIN state for both protocols");
+                check(f->env.now > before,
+                      "MC/GA PIN probe requires a fresh touch");
+                check(f->ct.store.counter == counter &&
+                          f->ct.store.cred_count == 0 && len == 0,
+                      "MC/GA PIN probe emits no credential or assertion");
+            }
+        }
+    }
 }
 
 static void test_exclude_timeout(fixture *f) {
