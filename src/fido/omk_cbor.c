@@ -75,6 +75,8 @@ static bool cbor_key_equal(const omk_cbor_val *a, const omk_cbor_val *b) {
         return a->len == b->len && memcmp(a->data, b->data, a->len) == 0;
     case OMK_CBOR_BOOL:
         return a->boolean == b->boolean;
+    case OMK_CBOR_NULL:
+        return true;
     default:
         return false;
     }
@@ -82,23 +84,6 @@ static bool cbor_key_equal(const omk_cbor_val *a, const omk_cbor_val *b) {
 
 static bool cbor_key_is_scalar(const omk_cbor_val *v) {
     return v->type != OMK_CBOR_ARRAY && v->type != OMK_CBOR_MAP;
-}
-
-/* Returns the key node index of pair `pair`, or CBOR_CHILD_NONE. */
-static uint16_t cbor_map_pair_key(const omk_cbor_doc *doc,
-                                  const omk_cbor_val *map, uint64_t pair) {
-    uint16_t k = map->first_child;
-    for (uint64_t i = 0; i < pair; i++) {
-        if (k == CBOR_CHILD_NONE) {
-            return CBOR_CHILD_NONE;
-        }
-        const uint16_t v = doc->vals[k].next;
-        if (v == CBOR_CHILD_NONE) {
-            return CBOR_CHILD_NONE;
-        }
-        k = doc->vals[v].next;
-    }
-    return k;
 }
 
 static bool cbor_parse_item(omk_cbor_doc *doc, size_t *pos, unsigned depth) {
@@ -162,6 +147,20 @@ static bool cbor_parse_item(omk_cbor_doc *doc, size_t *pos, unsigned depth) {
             if (!cbor_parse_item(doc, pos, depth + 1)) {
                 return false;
             }
+            if (is_map && (i & 1u) == 0) {
+                const omk_cbor_val *key = &doc->vals[child];
+                if (!cbor_key_is_scalar(key)) {
+                    return false;
+                }
+                /* Only complete key/value pairs are linked so far. Walk
+                 * their sibling links once; nested values are skipped. */
+                for (uint16_t k = first; k != CBOR_CHILD_NONE;
+                     k = doc->vals[doc->vals[k].next].next) {
+                    if (cbor_key_equal(&doc->vals[k], key)) {
+                        return false;
+                    }
+                }
+            }
             if (prev == CBOR_CHILD_NONE) {
                 first = child;
             } else {
@@ -169,27 +168,8 @@ static bool cbor_parse_item(omk_cbor_doc *doc, size_t *pos, unsigned depth) {
             }
             prev = child;
         }
-        v = &doc->vals[idx];
         v->first_child = first;
         v->raw_len = (uint32_t)(*pos - start);
-
-        if (is_map) {
-            for (uint64_t i = 0; i < arg; i++) {
-                const uint16_t k = cbor_map_pair_key(doc, v, i);
-                if (k == CBOR_CHILD_NONE || !cbor_key_is_scalar(&doc->vals[k])) {
-                    return false;
-                }
-                for (uint64_t j = i + 1; j < arg; j++) {
-                    const uint16_t k2 = cbor_map_pair_key(doc, v, j);
-                    if (k2 == CBOR_CHILD_NONE) {
-                        return false;
-                    }
-                    if (cbor_key_equal(&doc->vals[k], &doc->vals[k2])) {
-                        return false;
-                    }
-                }
-            }
-        }
         return true;
     }
 
@@ -368,17 +348,12 @@ void omk_cbor_put_nint(omk_cbor_enc *e, int64_t v) {
 
 void omk_cbor_put_bytes(omk_cbor_enc *e, const void *data, size_t len) {
     cbor_put_head(e, 2, len);
-    const uint8_t *p = (const uint8_t *)data;
-    for (size_t i = 0; i < len; i++) {
-        cbor_put_byte(e, p[i]);
-    }
+    omk_cbor_put_raw(e, data, len);
 }
 
 void omk_cbor_put_text(omk_cbor_enc *e, const char *s, size_t len) {
     cbor_put_head(e, 3, len);
-    for (size_t i = 0; i < len; i++) {
-        cbor_put_byte(e, (uint8_t)s[i]);
-    }
+    omk_cbor_put_raw(e, s, len);
 }
 
 void omk_cbor_put_bool(omk_cbor_enc *e, bool b) {

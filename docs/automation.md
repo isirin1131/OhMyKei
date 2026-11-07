@@ -187,6 +187,23 @@ getPinUvAuthTokenUsingPinWithPermissions 共用私有 `pin_verify_encrypted_hash
 无漏跑/重复/必跑项未通过。已知 `ClientPin2-Policy / F-2` 断言冲突出现一次，
 由官方套件重试后通过；报告 `session-4w7yuo_3/result.json`。本轮未重跑官方全量。
 
+2026-11-07 共享 CBOR 核心去冗余：map 键在解析时与已完成的键值对比较，
+去掉每次比较都从链表头定位的辅助函数和不可达的缺节点分支；固定 arena 中
+的节点地址保持稳定。去重遍历从三次方级降为平方级，不增加堆分配或硬件依赖。
+同时修复重复 `null` 键漏检；文本与字节串编码复用 `omk_cbor_put_raw` 的容量
+检查和复制，溢出结果仍须丢弃。新增回归覆盖标量键类型、嵌套作用域、节点上限、
+截断 map、恰好容量及越界 canary；新增测试在原实现上复现重复键漏检。
+**macOS ASan/UBSan 14/14（33.05 秒）、Linux 核心 11/11（21.61 秒）、
+HID 14/14（26.443 秒）**通过；报告为
+`build/virtual-hid/runs/run-fja_bih6/result.json`。ARM 固件构建、布局检查及
+子代理只读审查通过。此次改动直接编入同一份固件核心，无需设备端重写。
+本轮官方完整套件 **208 通过、118 跳过、0 失败**（578.355 秒，退出码 0），
+326 项均有最终状态，无漏跑、重复、额外用例或必跑项未通过。已知
+`ClientPin2-Policy / F-2` 断言冲突出现一次（实际 `0x02`、期望 `0x37`），
+由官方重试后通过；报告为 `build/virtual-hid/official/session-j4j24xd6/result.json`。
+CBOR fuzz 未运行：已有 fuzz 目录缺少构建文件，系统 Clang 链接探测确认
+缺少 `libclang_rt.fuzzer_osx.a`，未安装新工具链。
+
 依赖镜像变化时，脚本停止并重命名旧专用容器后创建新容器，不删除旧容器。
 `python3 host/virtual/run.py stop` 停止当前两个专用容器。报告保留，临时合成 Flash
 和浏览器配置在任务完成后移入回收站；不读取其中的凭据数据。

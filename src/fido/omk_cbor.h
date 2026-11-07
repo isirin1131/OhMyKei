@@ -4,7 +4,8 @@
  * Decoder:
  *  - definite lengths only (indefinite length arrays/maps/strings are
  *    rejected), minimal-form integer heads required,
- *  - duplicate map keys are rejected (CTAP2_ERR_INVALID_CBOR),
+ *  - map keys must be scalars; duplicates of every supported scalar type
+ *    (including null) are rejected (CTAP2_ERR_INVALID_CBOR),
  *  - any map key order is accepted on input (real clients do not always
  *    emit canonical map ordering), unknown keys are preserved so callers
  *    can skip them,
@@ -14,6 +15,7 @@
  * Encoder: canonical CTAP2 encoding (minimal heads, definite lengths).
  * Map keys must be emitted by the caller in canonical order: integer keys
  * ascending, text keys by (length, bytes).
+ * If overflow is set, discard the output; a partial item may remain.
  */
 #ifndef OMK_FIDO_CBOR_H
 #define OMK_FIDO_CBOR_H
