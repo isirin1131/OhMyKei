@@ -8,8 +8,6 @@ permissions:
   contents: read
 
 env:
-  OMK_DEPS: ${{ runner.temp }}/omk-deps
-  PICO_SDK_PATH: ${{ runner.temp }}/pico-sdk
   GIT_TERMINAL_PROMPT: "0"
 
 jobs:
@@ -17,6 +15,12 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set runner-local dependency paths
+        run: |
+          # The runner context is unavailable in workflow-level env.
+          echo "OMK_DEPS=$RUNNER_TEMP/omk-deps" >> "$GITHUB_ENV"
+          echo "PICO_SDK_PATH=$RUNNER_TEMP/pico-sdk" >> "$GITHUB_ENV"
 
       - name: Check out pinned pico-sdk and TinyUSB
         run: |
