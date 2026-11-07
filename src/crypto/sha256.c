@@ -241,10 +241,16 @@ void omk_hmac_sha256(const uint8_t *key, size_t key_len,
     omk_memzero(opad, sizeof opad);
 }
 
-void omk_hkdf_sha256(const uint8_t *salt, size_t salt_len,
+bool omk_hkdf_sha256(const uint8_t *salt, size_t salt_len,
                      const uint8_t *ikm, size_t ikm_len,
                      const uint8_t *info, size_t info_len,
                      uint8_t *out, size_t out_len) {
+    if (out_len > 255u * OMK_SHA256_LEN) {
+        return false;
+    }
+    if (out_len == 0) {
+        return true;
+    }
     uint8_t prk[OMK_SHA256_LEN];
     uint8_t t[OMK_SHA256_LEN];
     uint8_t opad[64];
@@ -253,15 +259,6 @@ void omk_hkdf_sha256(const uint8_t *salt, size_t salt_len,
     size_t done = 0;
     size_t t_len = 0;
     size_t chunk;
-
-    if (out_len == 0) {
-        goto done;
-    }
-    if (out_len > 255u * OMK_SHA256_LEN) {
-        /* Contract: RFC 5869 caps the output at 255 blocks.  Clamp rather
-         * than wrap the block counter. */
-        out_len = 255u * OMK_SHA256_LEN;
-    }
 
     /* Extract: PRK = HMAC-SHA-256(salt, IKM).  A zero-length salt hashes as a
      * 64-byte zero pad, which is exactly the RFC 5869 default. */
@@ -289,12 +286,8 @@ void omk_hkdf_sha256(const uint8_t *salt, size_t salt_len,
         done += chunk;
     }
 
-done:
-    /* Every exit path wipes the extracted key, the block state and the
-     * keyed outer pad.  inner is normally wiped by HMAC final(); wipe it
-     * defensively so the zero-length early exit is covered as well. */
+    /* HMAC final() already wipes inner and opad. */
     omk_memzero(prk, sizeof prk);
     omk_memzero(t, sizeof t);
-    omk_memzero(opad, sizeof opad);
-    omk_memzero(&inner, sizeof inner);
+    return true;
 }

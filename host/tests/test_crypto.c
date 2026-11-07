@@ -120,8 +120,9 @@ static void test_hkdf(void) {
     memset(ikm, 0x0b, sizeof ikm);
     from_hex("000102030405060708090a0b0c", salt, sizeof salt);
     from_hex("f0f1f2f3f4f5f6f7f8f9", info, sizeof info);
-    omk_hkdf_sha256(salt, sizeof salt, ikm, sizeof ikm, info, sizeof info, out,
-                    sizeof out);
+    check_true(omk_hkdf_sha256(salt, sizeof salt, ikm, sizeof ikm,
+                               info, sizeof info, out, sizeof out),
+               "hkdf valid output size");
     from_hex("3cb25f25faacd57a90434f64d0362f2a"
              "2d2d0a90cf1a5a4c5db02d56ecc4c5bf"
              "34007208d5b887185865",
@@ -130,7 +131,8 @@ static void test_hkdf(void) {
 
     /* RFC 5869 TC3: zero-length salt and info. */
     uint8_t out3[42], want3[42];
-    omk_hkdf_sha256(NULL, 0, ikm, sizeof ikm, NULL, 0, out3, sizeof out3);
+    check_true(omk_hkdf_sha256(NULL, 0, ikm, sizeof ikm, NULL, 0,
+                               out3, sizeof out3), "hkdf empty salt and info");
     from_hex("8da4e775a563c18f715f802a063c5a31"
              "b8a11f5c5ee1879ec3454e5f3c738d2d"
              "9d201395faa4b61a96c8",
@@ -139,8 +141,17 @@ static void test_hkdf(void) {
 
     /* Zero-length output is a no-op and must not write to out. */
     uint8_t canary = 0x5a;
-    omk_hkdf_sha256(NULL, 0, ikm, sizeof ikm, NULL, 0, &canary, 0);
+    check_true(omk_hkdf_sha256(NULL, 0, ikm, sizeof ikm, NULL, 0, &canary, 0),
+               "hkdf zero length succeeds");
     check_true(canary == 0x5a, "hkdf zero length writes nothing");
+
+    /* Reject before reading inputs or producing a partial output. */
+    check_true(!omk_hkdf_sha256(NULL, 0, NULL, 0, NULL, 0, &canary,
+                                255u * OMK_SHA256_LEN + 1),
+               "hkdf oversized output rejected");
+    check_true(!omk_hkdf_sha256(NULL, 0, NULL, 0, NULL, 0, &canary, SIZE_MAX),
+               "hkdf SIZE_MAX rejected");
+    check_true(canary == 0x5a, "hkdf rejected output untouched");
 }
 
 static void test_aes(void) {

@@ -49,8 +49,9 @@ void omk_hmac_sha256(const uint8_t *key, size_t key_len,
                      const void *msg, size_t msg_len,
                      uint8_t out[OMK_HMAC256_LEN]);
 
-/* HKDF-SHA-256 (RFC 5869).  out_len is limited to 255 * 32 bytes. */
-void omk_hkdf_sha256(const uint8_t *salt, size_t salt_len,
+/* HKDF-SHA-256 (RFC 5869).  Returns false without writing out if out_len
+ * exceeds 255 * 32 bytes.  Zero-length output succeeds without writing. */
+bool omk_hkdf_sha256(const uint8_t *salt, size_t salt_len,
                      const uint8_t *ikm, size_t ikm_len,
                      const uint8_t *info, size_t info_len,
                      uint8_t *out, size_t out_len);
