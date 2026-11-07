@@ -159,6 +159,28 @@ python3 host/virtual/run.py official --group MakeCredentialRequest --grep 'F-9'
 完整结束且最终状态与前轮全量对应项一致。报告 `session-qwv59l_5/result.json`；
 本轮未重跑官方全量。
 
+2026-11-05 ClientPIN 响应编码去冗余：key agreement 响应复用现有
+`omk_cbor_put_raw`，替代手写逐字节复制和重复容量检查，保留编码器溢出处理。
+**9/9 核心（14.57 秒）、14/14 HID（26.841 秒）**通过，报告为
+`build/virtual-hid/runs/run-fv2amjoz/result.json`；固件布局检查和子代理只读审查通过。
+官方 ClientPin1/ClientPin2 首轮 **31 通过、18 跳过、1 失败**（97.365 秒），
+唯一失败为上述已知 `ClientPin2-Policy / F-2` 断言冲突，3 次重试后仍失败；
+报告 `session-nqdvrtge/result.json`。第二轮 **32 通过、18 跳过、0 失败**
+（95.797 秒），F-2 在 1 次重试后通过，50 项无漏跑/重复/必跑项未通过；
+报告 `session-nhrlfw32/result.json`。第二轮传入的 `--grep '^(?!.*F-2)'`
+未排除该用例，以上结果按实际执行的全部 50 项记录。这不代表已知随机断言冲突
+消失；未修改官方断言或固件错误码，本轮未重跑官方全量。
+
+2026-11-05 ClientPIN 哈希校验去冗余：changePIN、getPinToken 和
+getPinUvAuthTokenUsingPinWithPermissions 共用私有 `pin_verify_encrypted_hash`，
+集中处理 16 字节 PIN 哈希的解密、校验和明文擦除。参数检查、MAC 校验、
+重试计数及错误码顺序保持原样；changePIN 的旧 PIN 哈希在校验后立即擦除。
+**9/9 核心（14.61 秒）、14/14 HID（26.787 秒）**通过，报告为
+`build/virtual-hid/runs/run-9qiv9rbx/result.json`；固件布局检查和子代理只读审查通过。
+官方 ClientPin1/ClientPin2 **32 通过、18 跳过、0 失败**（94.246 秒），50 项
+无漏跑/重复/必跑项未通过。已知 `ClientPin2-Policy / F-2` 断言冲突出现一次，
+由官方套件重试后通过；报告 `session-4w7yuo_3/result.json`。本轮未重跑官方全量。
+
 依赖镜像变化时，脚本停止并重命名旧专用容器后创建新容器，不删除旧容器。
 `python3 host/virtual/run.py stop` 停止当前两个专用容器。报告保留，临时合成 Flash
 和浏览器配置在任务完成后移入回收站；不读取其中的凭据数据。

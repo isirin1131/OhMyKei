@@ -190,6 +190,19 @@ static uint8_t pin_verify_hash(omk_ctap *ct, const uint8_t hash[16]) {
     return OMK_CTAP2_ERR_PIN_INVALID;
 }
 
+static uint8_t pin_verify_encrypted_hash(omk_ctap *ct,
+                                           const pin_exchange *exchange,
+                                           const omk_cbor_val *enc) {
+    uint8_t plain[16] = {0};
+    uint8_t status = OMK_CTAP1_ERR_INVALID_PARAMETER;
+    if (omk_pin_protocol_decrypt(exchange->aes, exchange->protocol,
+                                 enc->data, enc->len, plain, sizeof plain)) {
+        status = pin_verify_hash(ct, plain);
+    }
+    omk_memzero(plain, sizeof plain);
+    return status;
+}
+
 static void pin_hash(const uint8_t *pin, size_t len, uint8_t out[16]) {
     uint8_t full[32];
     omk_sha256(pin, len, full);
@@ -346,14 +359,8 @@ static uint8_t sub_get_key_agreement(omk_ctap *ct) {
     omk_cbor_enc_init(&e, ct->response, sizeof ct->response);
     omk_cbor_put_map(&e, 1);
     omk_cbor_put_uint(&e, 1);
-    for (size_t i = 0; i < n; i++) {
-        /* Append the pre-encoded COSE key. */
-        if (e.len >= e.cap) {
-            e.overflow = true;
-            break;
-        }
-        e.buf[e.len++] = cose[i];
-    }
+    /* Append the pre-encoded COSE key as one CBOR value. */
+    omk_cbor_put_raw(&e, cose, n);
     ct->response_len = e.len;
     return e.overflow ? OMK_CTAP2_ERR_REQUEST_TOO_LARGE : OMK_CTAP2_OK;
 }
@@ -416,7 +423,6 @@ static uint8_t sub_change_pin(omk_ctap *ct, const omk_cbor_doc *doc,
     const omk_cbor_val *auth = omk_cbor_map_get_int(doc, req, 0x04);
     const omk_cbor_val *enc = omk_cbor_map_get_int(doc, req, 0x05);
     const omk_cbor_val *cur = omk_cbor_map_get_int(doc, req, 0x06);
-    uint8_t current[16] = {0};
     uint8_t plain[64] = {0};
     uint8_t hash[16] = {0};
     uint8_t status;
@@ -441,12 +447,7 @@ static uint8_t sub_change_pin(omk_ctap *ct, const omk_cbor_doc *doc,
                          cur->data, cur->len)) {
         return OMK_CTAP2_ERR_PIN_AUTH_INVALID;
     }
-    if (!omk_pin_protocol_decrypt(exchange->aes, exchange->protocol, cur->data,
-                                   cur->len, current, sizeof current)) {
-        status = OMK_CTAP1_ERR_INVALID_PARAMETER;
-        goto done;
-    }
-    status = pin_verify_hash(ct, current);
+    status = pin_verify_encrypted_hash(ct, exchange, cur);
     if (status != OMK_CTAP2_OK) {
         goto done;
     }
@@ -473,7 +474,6 @@ static uint8_t sub_change_pin(omk_ctap *ct, const omk_cbor_doc *doc,
     }
 
 done:
-    omk_memzero(current, sizeof current);
     omk_memzero(plain, sizeof plain);
     omk_memzero(hash, sizeof hash);
     return status;
@@ -549,14 +549,7 @@ static uint8_t sub_get_token(omk_ctap *ct, const omk_cbor_doc *doc,
     if (!pin_derive_shared(ct, doc, ka, exchange)) {
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
-    uint8_t plain[16] = {0};
-    if (!omk_pin_protocol_decrypt(exchange->aes, exchange->protocol, enc->data,
-                                   enc->len, plain, sizeof plain)) {
-        omk_memzero(plain, sizeof plain);
-        return OMK_CTAP1_ERR_INVALID_PARAMETER;
-    }
-    const uint8_t status = pin_verify_hash(ct, plain);
-    omk_memzero(plain, sizeof plain);
+    const uint8_t status = pin_verify_encrypted_hash(ct, exchange, enc);
     if (status != OMK_CTAP2_OK) {
         return status;
     }
@@ -604,14 +597,7 @@ static uint8_t sub_get_token_permissions(omk_ctap *ct,
     if (!pin_derive_shared(ct, doc, ka, exchange)) {
         return OMK_CTAP1_ERR_INVALID_PARAMETER;
     }
-    uint8_t plain[16] = {0};
-    if (!omk_pin_protocol_decrypt(exchange->aes, exchange->protocol, enc->data,
-                                   enc->len, plain, sizeof plain)) {
-        omk_memzero(plain, sizeof plain);
-        return OMK_CTAP1_ERR_INVALID_PARAMETER;
-    }
-    const uint8_t status = pin_verify_hash(ct, plain);
-    omk_memzero(plain, sizeof plain);
+    const uint8_t status = pin_verify_encrypted_hash(ct, exchange, enc);
     if (status != OMK_CTAP2_OK) {
         return status;
     }
